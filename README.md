@@ -1,12 +1,86 @@
-# Xcode Instruments MCP Research
+# Xcode Instruments Trace Analyzer (MCP)
 
-> Research and planning for building a Model Context Protocol (MCP) server that provides intelligent analysis of Xcode Instruments performance traces.
+> Intelligent Xcode Instruments trace analysis via Model Context Protocol - Built on comprehensive research and designed for AI assistants like Claude.
+
+## 🎉 Status: MVP COMPLETE!
+
+This repository contains both the **research documentation** and the **working implementation** of an MCP server that provides intelligent analysis of Xcode Instruments performance traces.
+
+## 🚀 Quick Start
+
+```bash
+# 1. Install dependencies
+pnpm install
+
+# 2. Build all packages
+pnpm build
+
+# 3. Configure Claude Desktop
+# Add to ~/Library/Application Support/Claude/claude_desktop_config.json:
+{
+  "mcpServers": {
+    "xctrace-analyzer": {
+      "command": "node",
+      "args": ["/path/to/XcodeTraceMCP/packages/mcp-server/dist/index.js"]
+    }
+  }
+}
+
+# 4. Restart Claude Desktop and start analyzing!
+```
+
+**Example conversation:**
+```
+You: Analyze my app's performance trace at ~/traces/myapp.trace
+Claude: I've analyzed your trace and found 2 critical bottlenecks...
+```
+
+See [packages/mcp-server/README.md](./packages/mcp-server/README.md) for detailed usage.
+
+---
+
+## 📦 Packages
+
+This is a monorepo containing two main packages:
+
+### [@xctrace-analyzer/core](./packages/core)
+Core TypeScript library for parsing and analyzing Xcode Instruments traces.
+
+**Features:**
+- Parse Time Profiler traces from xctrace XML
+- Identify performance bottlenecks automatically
+- Compare traces for regression detection
+- Generate actionable optimization recommendations
+- Pattern-based suggestion engine
+
+**Usage:**
+```typescript
+import { analyzeTraceFile, compareTraceFiles } from '@xctrace-analyzer/core';
+
+const analysis = await analyzeTraceFile('/path/to/app.trace');
+console.log(analysis.bottlenecks);
+console.log(analysis.recommendations);
+```
+
+[📖 Full Core Library Documentation](./packages/core/README.md)
+
+### [@xctrace-analyzer/mcp-server](./packages/mcp-server)
+MCP server that exposes the core library via Model Context Protocol.
+
+**MCP Tools:**
+- `analyze_trace` - Analyze single trace for bottlenecks
+- `compare_traces` - Compare two traces, detect regressions
+- `list_templates` - List available Instruments templates
+- `list_devices` - List available devices for profiling
+- `check_xctrace` - Check xctrace availability
+
+[📖 Full MCP Server Documentation](./packages/mcp-server/README.md)
+
+---
 
 ## 📚 Documentation
 
-This repository contains comprehensive research and architecture planning for building an MCP server around Xcode Instruments.
-
-### Documents
+### Research Documents
 
 1. **[MCP_RESEARCH_AND_ARCHITECTURE.md](./MCP_RESEARCH_AND_ARCHITECTURE.md)** - Comprehensive research findings
    - MCP protocol overview and best practices

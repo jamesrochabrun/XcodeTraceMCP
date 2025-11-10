@@ -1,0 +1,394 @@
+# @xctrace-analyzer/core
+
+> Core analysis library for Xcode Instruments performance traces
+
+A TypeScript library for parsing and analyzing Xcode Instruments `.trace` files, identifying performance bottlenecks, and generating actionable optimization recommendations.
+
+## Features
+
+- 📊 Parse Time Profiler traces from xctrace XML output
+- 🔍 Identify slow functions and performance bottlenecks
+- 📈 Compare traces to detect performance regressions
+- 💡 Generate actionable optimization recommendations
+- 🎯 Pattern-based suggestion engine (image caching, async operations, etc.)
+- ⚡️ Fast and efficient TypeScript implementation
+
+## Installation
+
+```bash
+npm install @xctrace-analyzer/core
+# or
+pnpm add @xctrace-analyzer/core
+```
+
+## Quick Start
+
+```typescript
+import { analyzeTraceFile, compareTraceFiles } from '@xctrace-analyzer/core';
+
+// Analyze a single trace
+const analysis = await analyzeTraceFile('/path/to/app.trace', {
+  slowThreshold: 100, // ms
+  topN: 10,
+});
+
+console.log(analysis.summary);
+console.log('Bottlenecks:', analysis.bottlenecks);
+console.log('Recommendations:', analysis.recommendations);
+
+// Compare two traces
+const comparison = await compareTraceFiles(
+  '/path/to/baseline.trace',
+  '/path/to/current.trace',
+  undefined, // analysis options
+  { regressionThreshold: 10 } // comparison options
+);
+
+console.log(comparison.summary);
+console.log('Regressions:', comparison.regressions);
+console.log('Improvements:', comparison.improvements);
+```
+
+## API Reference
+
+### High-Level Functions
+
+#### `analyzeTraceFile(tracePath, options?)`
+
+Parse and analyze a trace file in one call.
+
+**Returns:** `Promise<Analysis>`
+
+**Options:**
+```typescript
+interface AnalysisOptions {
+  slowThreshold?: number;      // ms threshold for slow functions (default: 100)
+  topN?: number;                // show top N functions (default: 10)
+  includeRecommendations?: boolean; // generate recommendations (default: true)
+  minCallCount?: number;        // minimum calls to consider (default: 1)
+}
+```
+
+#### `compareTraceFiles(baselinePath, currentPath, analysisOptions?, comparisonOptions?)`
+
+Compare two trace files for regressions and improvements.
+
+**Returns:** `Promise<Comparison>`
+
+**Comparison Options:**
+```typescript
+interface ComparisonOptions {
+  failOnRegression?: boolean;       // throw if regression detected (default: false)
+  regressionThreshold?: number;     // % increase to flag (default: 10)
+  minDuration?: number;             // only compare functions > N ms (default: 10)
+}
+```
+
+### Core Classes
+
+#### `TraceParser`
+
+Parses xctrace XML output into structured data.
+
+```typescript
+import { TraceParser } from '@xctrace-analyzer/core';
+
+const parser = new TraceParser();
+const parsed = await parser.parseTrace('/path/to/app.trace');
+```
+
+#### `PerformanceAnalyzer`
+
+Analyzes parsed traces for bottlenecks.
+
+```typescript
+import { PerformanceAnalyzer } from '@xctrace-analyzer/core';
+
+const analyzer = new PerformanceAnalyzer();
+const analysis = analyzer.analyze(parsedTrace, {
+  slowThreshold: 100,
+  topN: 10,
+});
+```
+
+#### `ComparativeAnalyzer`
+
+Compares two analyses to detect regressions.
+
+```typescript
+import { ComparativeAnalyzer } from '@xctrace-analyzer/core';
+
+const comparator = new ComparativeAnalyzer();
+const comparison = comparator.compare(baselineAnalysis, currentAnalysis, {
+  regressionThreshold: 10,
+});
+```
+
+#### `RecommendationEngine`
+
+Generates optimization recommendations.
+
+```typescript
+import { RecommendationEngine } from '@xctrace-analyzer/core';
+
+const engine = new RecommendationEngine();
+const recommendations = engine.generateRecommendations(analysis);
+```
+
+### Utilities
+
+#### xctrace-runner
+
+Utility functions for calling xctrace commands.
+
+```typescript
+import {
+  isXCTraceAvailable,
+  getXCTraceVersion,
+  exportTOC,
+  exportTable,
+  listTemplates,
+  listDevices,
+  recordTrace,
+} from '@xctrace-analyzer/core';
+
+// Check availability
+const available = await isXCTraceAvailable();
+
+// List templates
+const templates = await listTemplates();
+
+// Export time profile data
+const xml = await exportTable('/path/to/trace.trace', 'time-profile');
+```
+
+## Data Types
+
+### Analysis
+
+Complete analysis result for a trace.
+
+```typescript
+interface Analysis {
+  metadata: TraceMetadata;
+  stats: PerformanceStats;
+  bottlenecks: Bottleneck[];
+  recommendations: Recommendation[];
+  topFunctions: FunctionProfile[];
+  summary: string;
+}
+```
+
+### Comparison
+
+Result of comparing two traces.
+
+```typescript
+interface Comparison {
+  baseline: Analysis;
+  current: Analysis;
+  delta: PerformanceDelta;
+  regressions: Regression[];
+  improvements: Improvement[];
+  hasRegression: boolean;
+  hasCriticalRegression: boolean;
+  summary: string;
+}
+```
+
+### Bottleneck
+
+A performance bottleneck identified in the trace.
+
+```typescript
+interface Bottleneck {
+  function: string;
+  module?: string;
+  impact: 'critical' | 'high' | 'medium' | 'low';
+  duration: number;          // milliseconds
+  percentage: number;        // % of total time
+  suggestion: string;
+  callCount?: number;
+}
+```
+
+### Recommendation
+
+An actionable optimization recommendation.
+
+```typescript
+interface Recommendation {
+  type: 'optimization' | 'architecture' | 'caching' | 'async' | 'memory' | 'algorithm';
+  priority: 'high' | 'medium' | 'low';
+  title: string;
+  description: string;
+  affectedFunctions: string[];
+  potentialImprovement: string;
+  codeExample?: string;      // Swift code example
+}
+```
+
+## Examples
+
+### Basic Analysis
+
+```typescript
+import { analyzeTraceFile } from '@xctrace-analyzer/core';
+
+async function analyzeApp() {
+  const analysis = await analyzeTraceFile('./app.trace', {
+    slowThreshold: 100,
+    topN: 5,
+  });
+
+  console.log(`\n📊 Analysis Summary:`);
+  console.log(analysis.summary);
+
+  console.log(`\n🐌 Slow Functions:`);
+  for (const bottleneck of analysis.bottlenecks.slice(0, 3)) {
+    console.log(`- ${bottleneck.function}: ${bottleneck.duration.toFixed(0)}ms`);
+    console.log(`  💡 ${bottleneck.suggestion}`);
+  }
+
+  console.log(`\n💡 Top Recommendations:`);
+  for (const rec of analysis.recommendations.slice(0, 3)) {
+    console.log(`\n${rec.title} (${rec.priority} priority)`);
+    console.log(rec.description);
+    console.log(`Potential improvement: ${rec.potentialImprovement}`);
+  }
+}
+
+analyzeApp().catch(console.error);
+```
+
+### Regression Detection
+
+```typescript
+import { compareTraceFiles } from '@xctrace-analyzer/core';
+
+async function checkRegression() {
+  try {
+    const comparison = await compareTraceFiles(
+      './baseline.trace',
+      './current.trace',
+      undefined,
+      {
+        failOnRegression: true,
+        regressionThreshold: 15, // fail if >15% slower
+      }
+    );
+
+    console.log(comparison.summary);
+
+    if (comparison.regressions.length > 0) {
+      console.log('\n⚠️ Regressions found:');
+      for (const reg of comparison.regressions) {
+        console.log(
+          `- ${reg.function}: ` +
+          `${reg.baselineTime.toFixed(0)}ms → ${reg.currentTime.toFixed(0)}ms ` +
+          `(+${reg.percentageIncrease.toFixed(0)}%)`
+        );
+      }
+      process.exit(1); // Fail CI
+    }
+
+    console.log('\n✅ No significant regressions');
+  } catch (error) {
+    console.error('Regression detected!', error);
+    process.exit(1);
+  }
+}
+
+checkRegression();
+```
+
+### Custom Analysis Pipeline
+
+```typescript
+import {
+  TraceParser,
+  PerformanceAnalyzer,
+  RecommendationEngine,
+} from '@xctrace-analyzer/core';
+
+async function customAnalysis() {
+  // Step 1: Parse
+  const parser = new TraceParser();
+  const trace = await parser.parseTrace('./app.trace');
+
+  console.log(`Parsed ${trace.metadata.fileName}`);
+  console.log(`Duration: ${trace.metadata.duration}ms`);
+
+  // Step 2: Analyze
+  const analyzer = new PerformanceAnalyzer();
+  const analysis = analyzer.analyze(trace, {
+    slowThreshold: 50, // Lower threshold
+    topN: 20,          // More functions
+  });
+
+  // Step 3: Generate recommendations
+  const engine = new RecommendationEngine();
+  analysis.recommendations = engine.generateRecommendations(analysis);
+
+  // Step 4: Custom reporting
+  const criticalBottlenecks = analysis.bottlenecks.filter(
+    b => b.impact === 'critical'
+  );
+
+  if (criticalBottlenecks.length > 0) {
+    console.error('🔴 Critical performance issues found!');
+    for (const b of criticalBottlenecks) {
+      console.error(`- ${b.function}: ${b.duration}ms`);
+    }
+  }
+
+  return analysis;
+}
+
+customAnalysis();
+```
+
+## Requirements
+
+- **macOS** with Xcode Command Line Tools installed
+- **Node.js** 18+
+- **xctrace** command-line tool (included with Xcode)
+
+## Error Handling
+
+The library provides specific error types:
+
+```typescript
+import {
+  TraceParserError,
+  XCTraceError,
+  AnalysisError,
+} from '@xctrace-analyzer/core';
+
+try {
+  const analysis = await analyzeTraceFile('./nonexistent.trace');
+} catch (error) {
+  if (error instanceof TraceParserError) {
+    console.error('Failed to parse trace:', error.message);
+  } else if (error instanceof XCTraceError) {
+    console.error('xctrace command failed:', error.message);
+    console.error('Exit code:', error.exitCode);
+  } else if (error instanceof AnalysisError) {
+    console.error('Analysis failed:', error.message);
+  }
+}
+```
+
+## Performance
+
+- Parses typical 50MB trace files in < 2 seconds
+- Memory efficient streaming XML parsing
+- Handles traces with 10,000+ function profiles
+
+## License
+
+MIT
+
+## Contributing
+
+See the main repository README for contribution guidelines.

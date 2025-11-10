@@ -6,11 +6,16 @@ Ask Claude to analyze your app's performance, detect regressions, and get action
 
 ---
 
-## Quick Start
+## Installation
 
-### 1. Build
+### 1. Clone and Build
 
 ```bash
+# Clone the repository
+git clone https://github.com/jamesrochabrun/XcodeTraceMCP.git
+cd XcodeTraceMCP
+
+# Install dependencies and build
 pnpm install
 pnpm build
 ```

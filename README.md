@@ -8,21 +8,7 @@ Ask Claude to analyze your app's performance, detect regressions, and get action
 
 ## Installation
 
-### 1. Clone and Build
-
-```bash
-# Clone the repository
-git clone https://github.com/jamesrochabrun/XcodeTraceMCP.git
-cd XcodeTraceMCP
-
-# Install dependencies and build
-pnpm install
-pnpm build
-```
-
-### 2. Configure Your Claude Client
-
-#### Option A: Claude Desktop
+### Claude Desktop
 
 Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
@@ -30,8 +16,8 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "xctrace-analyzer": {
-      "command": "node",
-      "args": ["/absolute/path/to/XcodeTraceMCP/packages/mcp-server/dist/index.js"]
+      "command": "npx",
+      "args": ["-y", "@xctrace-analyzer/mcp-server"]
     }
   }
 }
@@ -39,27 +25,24 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 Restart Claude Desktop.
 
-#### Option B: Claude Code (Web)
+### Claude Code (Web)
 
-1. Open this project in Claude Code
-2. Create `.claude/mcp_settings.json` in the project root:
+Create `.claude/mcp_settings.json` in your project root:
 
 ```json
 {
   "mcpServers": {
     "xctrace-analyzer": {
-      "command": "node",
-      "args": ["packages/mcp-server/dist/index.js"]
+      "command": "npx",
+      "args": ["-y", "@xctrace-analyzer/mcp-server"]
     }
   }
 }
 ```
 
-3. Reload the window
+Reload the window.
 
-The MCP server will now be available in Claude Code for this project.
-
-#### Option C: Claude Code CLI
+### Claude Code CLI
 
 Add to `~/.config/claude/config.json`:
 
@@ -67,16 +50,24 @@ Add to `~/.config/claude/config.json`:
 {
   "mcpServers": {
     "xctrace-analyzer": {
-      "command": "node",
-      "args": ["/absolute/path/to/XcodeTraceMCP/packages/mcp-server/dist/index.js"]
+      "command": "npx",
+      "args": ["-y", "@xctrace-analyzer/mcp-server"]
     }
   }
 }
 ```
 
-Restart your terminal session.
+Restart your terminal.
 
-### 3. Use with Claude
+---
+
+**That's it!** No installation needed - `npx` will automatically download and run the server.
+
+> **Note:** Package not yet published to npm. For now, use the [Development setup](#development) below.
+
+---
+
+## Usage
 
 ```
 You: Analyze my app's performance trace at ~/traces/myapp.trace
@@ -201,6 +192,35 @@ The NetworkClient regression is concerning. Should I investigate?
 ```
 
 ---
+
+## Development
+
+Want to contribute or run from source?
+
+```bash
+# Clone the repository
+git clone https://github.com/jamesrochabrun/XcodeTraceMCP.git
+cd XcodeTraceMCP
+
+# Install dependencies and build
+pnpm install
+pnpm build
+
+# Run locally (for testing)
+node packages/mcp-server/dist/index.js
+```
+
+Then configure Claude to use your local build:
+```json
+{
+  "mcpServers": {
+    "xctrace-analyzer": {
+      "command": "node",
+      "args": ["/absolute/path/to/XcodeTraceMCP/packages/mcp-server/dist/index.js"]
+    }
+  }
+}
+```
 
 ## Contributing
 

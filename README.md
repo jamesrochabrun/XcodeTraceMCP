@@ -15,7 +15,9 @@ pnpm install
 pnpm build
 ```
 
-### 2. Configure Claude Desktop
+### 2. Configure Your Claude Client
+
+#### Option A: Claude Desktop
 
 Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
@@ -30,9 +32,29 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 }
 ```
 
-### 3. Use with Claude
+Restart Claude Desktop.
 
-Restart Claude Desktop, then:
+#### Option B: Claude Code (Web)
+
+1. Open this project in Claude Code
+2. Create `.claude/mcp_settings.json` in the project root:
+
+```json
+{
+  "mcpServers": {
+    "xctrace-analyzer": {
+      "command": "node",
+      "args": ["packages/mcp-server/dist/index.js"]
+    }
+  }
+}
+```
+
+3. Reload the window
+
+The MCP server will now be available in Claude Code for this project.
+
+### 3. Use with Claude
 
 ```
 You: Analyze my app's performance trace at ~/traces/myapp.trace
@@ -109,7 +131,7 @@ MCP server exposing the core library to AI assistants.
 - **macOS** with Xcode Command Line Tools
 - **Node.js** 18+
 - **pnpm** (or npm/yarn)
-- **Claude Desktop** (or another MCP client)
+- **Claude Desktop** or **Claude Code** (or another MCP-compatible client)
 
 ---
 

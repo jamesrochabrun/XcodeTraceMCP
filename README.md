@@ -54,6 +54,23 @@ Restart Claude Desktop.
 
 The MCP server will now be available in Claude Code for this project.
 
+#### Option C: Claude Code CLI
+
+Add to `~/.config/claude/config.json`:
+
+```json
+{
+  "mcpServers": {
+    "xctrace-analyzer": {
+      "command": "node",
+      "args": ["/absolute/path/to/XcodeTraceMCP/packages/mcp-server/dist/index.js"]
+    }
+  }
+}
+```
+
+Restart your terminal session.
+
 ### 3. Use with Claude
 
 ```
@@ -131,7 +148,7 @@ MCP server exposing the core library to AI assistants.
 - **macOS** with Xcode Command Line Tools
 - **Node.js** 18+
 - **pnpm** (or npm/yarn)
-- **Claude Desktop** or **Claude Code** (or another MCP-compatible client)
+- **Claude Desktop**, **Claude Code (Web/CLI)**, or another MCP-compatible client
 
 ---
 

@@ -1,12 +1,12 @@
 # Agent Guide
 
-This repository contains a local Model Context Protocol (MCP) server for Xcode Instruments profiling. The server lets an assistant record or analyze `.trace` files through MCP tools, then returns Markdown reports with CPU, memory, network, allocation, leak, and regression findings.
+This repository contains a local Model Context Protocol (MCP) server for headless Xcode Instruments profiling. Treat it as an honest `xcrun xctrace` companion, not a replacement for Instruments.app. The server records, symbolicates, exports, parses, and analyzes what Apple exposes through `xctrace`, then reports unsupported or non-exportable data explicitly.
 
 ## Project Architecture
 
 The repo is a pnpm workspace with two packages:
 
-- `packages/core`: reusable TypeScript library for `xcrun xctrace` recording/exporting, trace parsing, analysis, recommendations, and Time Profiler comparisons.
+- `packages/core`: reusable TypeScript library for `xcrun xctrace` capability checks, recording/exporting, symbolication, trace parsing, analysis, recommendations, and Time Profiler comparisons.
 - `packages/mcp-server`: MCP stdio server that exposes the core library as assistant-callable tools.
 
 High-level flow:
@@ -14,15 +14,19 @@ High-level flow:
 1. An MCP client calls a tool such as `profile_running_app`.
 2. The MCP server validates arguments and delegates to `@xctrace-analyzer/core`.
 3. Core runs `xcrun xctrace` using `execFile` argument arrays.
-4. Core parses `xctrace export --toc`, XPath table XML, and HAR output when available.
-5. Core returns typed analysis objects.
-6. The MCP server formats those objects into Markdown reports.
+4. Core parses `xctrace export --toc`, TOC-driven XPath table XML, and HAR output when available.
+5. Core returns typed analysis objects with support status and export attempts.
+6. The MCP server formats those objects into Markdown, JSON, or both.
 
 ## MCP Tools
 
+### `profile_advisor`
+
+Use this first when the user says something vague like "profile my app", "let's profile", or "what can we inspect?" It suggests the best workflow and returns exact next tool-call arguments for `profile_running_app`, `track_running_app`, `analyze_trace`, or `compare_traces`.
+
 ### `profile_running_app`
 
-Use this for broad profiling requests like "start profiling MyApp for 60 seconds" or "give me a full performance report." It records one combined trace, then analyzes it.
+Use this for broad profiling requests like "start profiling MyApp for 60 seconds" or "give me a full performance report." It records one combined trace, then analyzes it. It supports attach, launch, and all-processes target modes; `processName` is the attach shorthand.
 
 Default macOS `full` preset:
 
@@ -41,6 +45,7 @@ Other presets:
 Report contents:
 
 - Recording metadata and saved trace path
+- Support matrix and export diagnostics
 - CPU / Time Profiler bottlenecks
 - Leaks findings when exportable
 - Allocation metrics and churn findings when exportable
@@ -49,11 +54,11 @@ Report contents:
 
 ### `track_running_app`
 
-Use this when the user names one specific Instruments template, such as `Leaks` or `Allocations`. It records one template and optionally analyzes the trace.
+Use this when the user names one specific Instruments template, such as `Leaks` or `Allocations`. It records one template and optionally analyzes the trace. It supports attach, launch, and all-processes target modes.
 
 ### `analyze_trace`
 
-Use this when the user already has a `.trace` file. It does not record. It exports the trace TOC, discovers supported schemas, parses Time Profiler and supported instrument data, then returns one analysis report.
+Use this when the user already has a `.trace` file. It does not record. It can optionally symbolicate to a temporary trace with `dsymPath`, exports the trace TOC, discovers supported schemas, parses Time Profiler and supported instrument data, then returns one analysis report. Use `outputFormat: "json"` or `"both"` when callers need structured output.
 
 ### `compare_traces`
 
@@ -63,7 +68,7 @@ Use this for Time Profiler baseline/current regression checks. It reports total-
 
 - `list_templates`: list Instruments templates available on the machine
 - `list_devices`: list physical devices and simulators visible to `xctrace`
-- `check_xctrace`: verify `xcrun xctrace` availability and version
+- `check_xctrace`: verify `xcrun xctrace` availability and report version, templates, devices, instruments, export modes, record modes, symbolication support, and warnings
 
 ## Operational Notes
 
@@ -72,6 +77,8 @@ Use this for Time Profiler baseline/current regression checks. It reports total-
 - `xctrace` can save malformed or partial traces even when recording exits nonzero. Surface the underlying `xctrace` stderr/stdout details in reports.
 - Xcode export schemas vary by Xcode version and template. Prefer TOC-driven schema discovery over hard-coded table names.
 - Network analysis should prefer HAR export when available and fall back to XML table exports.
+- Every analysis family should be reported as `supported`, `partial`, `not_exportable`, or `unsupported`; do not imply Instruments.app GUI parity.
+- Use temp output paths for XML/HAR exports and symbolication so commands do not dirty the repo or mutate source traces.
 - Real `.trace` files should stay out of git. Use ignored local directories such as `test-traces/` for manual validation.
 
 ## Development Commands
@@ -81,10 +88,12 @@ From the repo root:
 ```bash
 pnpm install --frozen-lockfile
 pnpm verify
+pnpm test:integration
 pnpm inspect:trace test-traces/example.trace
 ```
 
 `pnpm verify` runs typecheck, tests, and build. Run it before claiming a change is complete or opening a PR.
+`pnpm test:integration` smoke-tests the local `xcrun xctrace` command surface; it is machine-dependent and intended for local validation.
 
 ## Coding Guidelines
 

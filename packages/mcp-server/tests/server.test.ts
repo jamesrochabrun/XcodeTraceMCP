@@ -72,6 +72,62 @@ function comparison(overrides: Partial<Comparison> = {}): Comparison {
 }
 
 describe('XCTraceAnalyzerServer', () => {
+  it('suggests a concrete profiling workflow for vague profile requests', async () => {
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () => analysis(),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => ['Time Profiler', 'Allocations', 'Leaks'],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+      getXCTraceCapabilities: async () => ({
+        available: true,
+        version: 'xctrace version 16.0 (17E192)',
+        templates: ['Time Profiler', 'Allocations', 'Leaks'],
+        devices: ['MacBook Pro'],
+        instruments: [],
+        exportModes: ['toc', 'xpath', 'har'],
+        recordModes: ['attach', 'launch', 'all-processes'],
+        supportsSymbolication: true,
+        warnings: [],
+      }),
+    });
+
+    const result = await server.callTool('profile_advisor', {
+      request: 'lets profile my app',
+      processName: 'MyApp',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('# Profiling Advisor');
+    expect(result.content[0].text).toContain('Use `profile_running_app`: Full performance report.');
+    expect(result.content[0].text).toContain('"processName": "MyApp"');
+    expect(result.content[0].text).toContain('"preset": "full"');
+  });
+
+  it('suggests analyze_trace when an existing trace path is provided', async () => {
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () => analysis(),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    const result = await server.callTool('profile_advisor', {
+      request: 'analyze this trace',
+      tracePath: '/tmp/app.trace',
+      outputFormat: 'json',
+    });
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(payload.recommended.tool).toBe('analyze_trace');
+    expect(payload.recommended.arguments.tracePath).toBe('/tmp/app.trace');
+  });
+
   it('formats analysis output with clear slow function statistics', async () => {
     const server = new XCTraceAnalyzerServer({
       analyzeTraceFile: async () => analysis(),
@@ -130,6 +186,7 @@ describe('XCTraceAnalyzerServer', () => {
 
     expect(result.content[0].text).toContain('xctrace is available');
     expect(result.content[0].text).toContain('xctrace version 16.0 (17E192)');
+    expect(result.content[0].text).toContain('Capabilities:');
   });
 
   it('returns concise tool errors without stack traces', async () => {
@@ -215,6 +272,85 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).toContain('### Network Analysis');
   });
 
+  it('returns structured JSON when requested', async () => {
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () =>
+        analysis({
+          supportStatus: [
+            {
+              kind: 'network',
+              status: 'partial',
+              reason: 'HAR was exported, but raw CFNetwork tables were skipped.',
+              sourceSchemas: ['har', 'com-apple-cfnetwork-task-drawables'],
+            },
+          ],
+          exportAttempts: [
+            {
+              kind: 'har',
+              status: 'success',
+            },
+          ],
+        }),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    const result = await server.callTool('analyze_trace', {
+      tracePath: '/tmp/app.trace',
+      outputFormat: 'json',
+    });
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(payload.analysis.summary).toBe('Found useful data.');
+    expect(payload.supportStatus).toEqual([
+      expect.objectContaining({ kind: 'network', status: 'partial' }),
+    ]);
+    expect(payload.exportAttempts).toEqual([
+      expect.objectContaining({ kind: 'har', status: 'success' }),
+    ]);
+  });
+
+  it('symbolicates to a temporary trace before analysis when a dSYM path is provided', async () => {
+    let analyzedPath: string | undefined;
+    let symbolicatedInput: string | undefined;
+    let symbolicatedOutput: string | undefined;
+
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async (tracePath) => {
+        analyzedPath = tracePath;
+        return analysis();
+      },
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+      symbolicateTrace: async (options) => {
+        symbolicatedInput = options.inputPath;
+        symbolicatedOutput = options.outputPath;
+      },
+    });
+
+    const result = await server.callTool('analyze_trace', {
+      tracePath: '/tmp/app.trace',
+      dsymPath: '/tmp/App.dSYM',
+      outputFormat: 'json',
+    });
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(symbolicatedInput).toBe('/tmp/app.trace');
+    expect(symbolicatedOutput).toContain('app-symbolicated.trace');
+    expect(analyzedPath).toBe(symbolicatedOutput);
+    expect(payload.exportAttempts[0]).toEqual(
+      expect.objectContaining({ kind: 'symbolication', status: 'success' })
+    );
+  });
+
   it('records a running app and analyzes the captured trace', async () => {
     let recordOptions: RecordOptions | undefined;
 
@@ -271,11 +407,51 @@ describe('XCTraceAnalyzerServer', () => {
     });
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain('# Running App Trace Report');
-    expect(result.content[0].text).toContain('- Process: MyApp');
+    expect(result.content[0].text).toContain('- Target: attach: MyApp');
     expect(result.content[0].text).toContain('- Template: Leaks');
     expect(result.content[0].text).toContain('- Trace: /tmp/MyApp-leaks.trace');
     expect(result.content[0].text).toContain('### Leaks Analysis');
     expect(result.content[0].text).toContain('Leaks detected');
+  });
+
+  it('records a launched target with arguments and environment', async () => {
+    let recordOptions: RecordOptions | undefined;
+
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () => analysis(),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async (options) => {
+        recordOptions = options;
+      },
+    });
+
+    const result = await server.callTool('track_running_app', {
+      target: 'launch',
+      launchCommand: '/tmp/MyTool',
+      launchArguments: ['--mode', 'profile'],
+      environment: { PERF_TEST: '1' },
+      template: 'Allocations',
+      durationSeconds: 5,
+      outputPath: '/tmp/MyTool.trace',
+      analyze: false,
+    });
+
+    expect(recordOptions).toEqual({
+      template: 'Allocations',
+      launchCommand: '/tmp/MyTool',
+      launchArguments: ['--mode', 'profile'],
+      environment: { PERF_TEST: '1' },
+      targetStdin: undefined,
+      targetStdout: undefined,
+      duration: 5,
+      outputPath: '/tmp/MyTool.trace',
+    });
+    expect(result.content[0].text).toContain('- Target: launch: /tmp/MyTool');
+    expect(result.content[0].text).toContain('Analysis skipped.');
   });
 
   it('profiles a running app with the full preset and returns one combined report', async () => {
@@ -349,7 +525,7 @@ describe('XCTraceAnalyzerServer', () => {
     ]);
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain('# Profiling Report');
-    expect(result.content[0].text).toContain('- Process: MyApp');
+    expect(result.content[0].text).toContain('- Target: attach: MyApp');
     expect(result.content[0].text).toContain('- Preset: full');
     expect(result.content[0].text).toContain('- Duration: 10s');
     expect(result.content[0].text).toContain('- Recording strategy: combined');

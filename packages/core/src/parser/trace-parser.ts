@@ -16,18 +16,24 @@ import {
   InstrumentFinding,
   InstrumentMetric,
   TraceKind,
+  ExportAttempt,
+  AnalysisSupportStatus,
+  TraceTableDescriptor,
+  SupportStatus,
 } from '../types.js';
-import { exportHAR, exportTable, exportTOC } from '../utils/xctrace-runner.js';
+import { exportHAR, exportTable, exportTOC, exportXPath } from '../utils/xctrace-runner.js';
 
 export interface TraceExporter {
   exportTOC(tracePath: string): Promise<string>;
   exportTable(tracePath: string, schema: string, runNumber?: number): Promise<string>;
+  exportXPath?(tracePath: string, xpath: string): Promise<string>;
   exportHAR?(tracePath: string): Promise<string>;
 }
 
 const defaultExporter: TraceExporter = {
   exportTOC,
   exportTable,
+  exportXPath,
   exportHAR,
 };
 
@@ -57,12 +63,53 @@ const NETWORK_RAW_EXPORT_DENY_PATTERNS = [
   /harlogging/i,
 ];
 
+const BYTE_UNIT_MULTIPLIERS: Record<string, number> = {
+  b: 1,
+  byte: 1,
+  bytes: 1,
+  kb: 1024,
+  kib: 1024,
+  mb: 1024 * 1024,
+  mib: 1024 * 1024,
+  gb: 1024 * 1024 * 1024,
+  gib: 1024 * 1024 * 1024,
+};
+
+const NUMERIC_UNITS = new Set([
+  '%',
+  'percent',
+  'ms',
+  's',
+  'sec',
+  'secs',
+  'second',
+  'seconds',
+  'm',
+  'min',
+  'mins',
+  'minute',
+  'minutes',
+  'h',
+  'hr',
+  'hrs',
+  'hour',
+  'hours',
+  'count',
+  'counts',
+  'sample',
+  'samples',
+  'request',
+  'requests',
+  'wakeups',
+]);
+
 /**
  * Main parser class for Xcode Instruments traces
  */
 export class TraceParser {
   private xmlParser: XMLParser;
   private exporter: TraceExporter;
+  private exportAttempts: ExportAttempt[] = [];
 
   constructor(exporter: TraceExporter = defaultExporter) {
     this.exporter = exporter;
@@ -80,20 +127,31 @@ export class TraceParser {
    */
   async parseTrace(tracePath: string): Promise<ParsedTrace> {
     try {
+      this.exportAttempts = [];
+
       // Validate trace file exists
       await this.validateTraceFile(tracePath);
 
       // Get metadata and table schemas
-      const { metadata, schemas } = await this.extractMetadataAndSchemas(tracePath);
+      const { metadata, schemas, tableDescriptors } =
+        await this.extractMetadataAndSchemas(tracePath);
 
       // Parse time profile data
-      const timeProfile = await this.parseTimeProfile(tracePath);
-      const instrumentAnalyses = await this.parseInstrumentAnalyses(tracePath, schemas);
+      const timeProfile = await this.parseTimeProfile(tracePath, schemas, tableDescriptors);
+      const instrumentAnalyses = await this.parseInstrumentAnalyses(
+        tracePath,
+        schemas,
+        tableDescriptors
+      );
+      const supportStatus = this.buildSupportStatus(schemas, timeProfile, instrumentAnalyses);
 
       return {
         metadata,
         timeProfile,
         instrumentAnalyses,
+        tableDescriptors,
+        exportAttempts: [...this.exportAttempts],
+        supportStatus,
       };
     } catch (error) {
       if (error instanceof TraceParserError) {
@@ -128,11 +186,20 @@ export class TraceParser {
    */
   private async extractMetadataAndSchemas(
     tracePath: string
-  ): Promise<{ metadata: TraceMetadata; schemas: string[] }> {
+  ): Promise<{
+    metadata: TraceMetadata;
+    schemas: string[];
+    tableDescriptors: TraceTableDescriptor[];
+  }> {
     try {
       const tocXML = await this.exporter.exportTOC(tracePath);
       const tocData = this.xmlParser.parse(tocXML);
       const schemas = this.extractSchemas(tocData);
+      const tableDescriptors = this.extractTableDescriptors(tocData);
+      this.exportAttempts.push({
+        kind: 'toc',
+        status: schemas.length > 0 ? 'success' : 'empty',
+      });
 
       // Extract metadata from TOC
       const run = tocData['trace-toc']?.run;
@@ -161,8 +228,13 @@ export class TraceParser {
         metadata.duration = this.parseDuration(run.duration);
       }
 
-      return { metadata, schemas };
+      return { metadata, schemas, tableDescriptors };
     } catch (error) {
+      this.exportAttempts.push({
+        kind: 'toc',
+        status: 'failed',
+        message: (error as Error).message,
+      });
       // Return minimal metadata if we can't parse TOC
       return {
         metadata: {
@@ -172,6 +244,7 @@ export class TraceParser {
           template: 'Unknown',
         },
         schemas: [],
+        tableDescriptors: [],
       };
     }
   }
@@ -179,12 +252,35 @@ export class TraceParser {
   /**
    * Parse Time Profiler data from trace
    */
-  private async parseTimeProfile(tracePath: string): Promise<TimeProfileData | undefined> {
+  private async parseTimeProfile(
+    tracePath: string,
+    schemas: string[],
+    tableDescriptors: TraceTableDescriptor[]
+  ): Promise<TimeProfileData | undefined> {
+    if (schemas.length > 0 && !schemas.includes('time-profile')) {
+      this.exportAttempts.push({
+        kind: 'time-profile',
+        status: 'skipped',
+        schema: 'time-profile',
+        message: 'The trace TOC does not expose a Time Profiler table.',
+      });
+      return undefined;
+    }
+
     try {
-      const xmlData = await this.exporter.exportTable(tracePath, 'time-profile');
+      const descriptor = tableDescriptors.find((table) => table.schema === 'time-profile');
+      const xmlData = descriptor?.xpath && this.exporter.exportXPath
+        ? await this.exporter.exportXPath(tracePath, descriptor.xpath)
+        : await this.exporter.exportTable(tracePath, 'time-profile', descriptor?.runNumber);
 
       if (!xmlData || xmlData.trim() === '') {
         // No time profile data available
+        this.exportAttempts.push({
+          kind: 'time-profile',
+          status: 'empty',
+          schema: 'time-profile',
+          xpath: descriptor?.xpath,
+        });
         return undefined;
       }
 
@@ -194,6 +290,13 @@ export class TraceParser {
       // trace-query-result/node instead of returning a bare table element.
       const table = parsed.table ?? parsed['trace-query-result']?.node;
       if (!table) {
+        this.exportAttempts.push({
+          kind: 'time-profile',
+          status: 'empty',
+          schema: 'time-profile',
+          xpath: descriptor?.xpath,
+          message: 'No table rows were exported for Time Profiler.',
+        });
         return undefined;
       }
 
@@ -217,6 +320,13 @@ export class TraceParser {
         }
       }
 
+      this.exportAttempts.push({
+        kind: 'time-profile',
+        status: samples.length > 0 ? 'success' : 'empty',
+        schema: 'time-profile',
+        xpath: descriptor?.xpath,
+      });
+
       // Convert function map to sorted array
       const functionProfiles = Array.from(functionMap.values())
         .sort((a, b) => b.totalTime - a.totalTime);
@@ -232,6 +342,12 @@ export class TraceParser {
         functionProfiles,
       };
     } catch (error) {
+      this.exportAttempts.push({
+        kind: 'time-profile',
+        status: 'failed',
+        schema: 'time-profile',
+        message: (error as Error).message,
+      });
       console.warn('Failed to parse time profile data:', error);
       return undefined;
     }
@@ -242,14 +358,15 @@ export class TraceParser {
    */
   private async parseInstrumentAnalyses(
     tracePath: string,
-    schemas: string[]
+    schemas: string[],
+    tableDescriptors: TraceTableDescriptor[]
   ): Promise<InstrumentAnalysis[]> {
     const analyses: InstrumentAnalysis[] = [];
 
     for (const kind of INSTRUMENT_ORDER) {
       const matchingSchemas = this.matchSchemasForKind(schemas, kind);
       if (kind === 'network') {
-        const network = await this.parseNetworkAnalysis(tracePath, matchingSchemas);
+        const network = await this.parseNetworkAnalysis(tracePath, matchingSchemas, tableDescriptors);
         if (network) {
           analyses.push(network);
         }
@@ -260,7 +377,7 @@ export class TraceParser {
         continue;
       }
 
-      const rows = await this.exportRowsForSchemas(tracePath, matchingSchemas);
+      const rows = await this.exportRowsForSchemas(tracePath, matchingSchemas, tableDescriptors, kind);
       const analysis = this.analyzeRowsForKind(kind, rows, matchingSchemas);
       if (analysis) {
         analyses.push(analysis);
@@ -272,7 +389,8 @@ export class TraceParser {
 
   private async parseNetworkAnalysis(
     tracePath: string,
-    matchingSchemas: string[]
+    matchingSchemas: string[],
+    tableDescriptors: TraceTableDescriptor[]
   ): Promise<InstrumentAnalysis | undefined> {
     const har = await this.tryExportHAR(tracePath);
     if (har) {
@@ -292,10 +410,22 @@ export class TraceParser {
       );
     }
 
-    const rows = await this.exportRowsForSchemas(tracePath, exportableSchemas);
-    rows.push(...this.unexportedRowsForSchemas(
-      matchingSchemas.filter((schema) => !exportableSchemas.includes(schema))
-    ));
+    const rows = await this.exportRowsForSchemas(
+      tracePath,
+      exportableSchemas,
+      tableDescriptors,
+      'network'
+    );
+    const skippedSchemas = matchingSchemas.filter((schema) => !exportableSchemas.includes(schema));
+    for (const schema of skippedSchemas) {
+      this.exportAttempts.push({
+        kind: 'network',
+        status: 'skipped',
+        schema,
+        message: 'Schema is known to be unsafe or not useful for raw XML export; HAR is preferred.',
+      });
+    }
+    rows.push(...this.unexportedRowsForSchemas(skippedSchemas));
     return this.analyzeRowsForKind('network', rows, matchingSchemas);
   }
 
@@ -307,10 +437,13 @@ export class TraceParser {
     try {
       const har = await this.exporter.exportHAR(tracePath);
       if (!har || !har.trim()) {
+        this.exportAttempts.push({ kind: 'har', status: 'empty' });
         return undefined;
       }
+      this.exportAttempts.push({ kind: 'har', status: 'success' });
       return JSON.parse(har);
     } catch {
+      this.exportAttempts.push({ kind: 'har', status: 'failed' });
       return undefined;
     }
   }
@@ -331,6 +464,89 @@ export class TraceParser {
         return this.analyzeAllocationRows(rows, sourceSchemas);
       case 'leaks':
         return this.analyzeLeakRows(rows, sourceSchemas);
+    }
+  }
+
+  private buildSupportStatus(
+    schemas: string[],
+    timeProfile: TimeProfileData | undefined,
+    instrumentAnalyses: InstrumentAnalysis[]
+  ): AnalysisSupportStatus[] {
+    const statuses: AnalysisSupportStatus[] = [];
+    const analyses = new Map(instrumentAnalyses.map((analysis) => [analysis.kind, analysis]));
+    const hasTimeProfileSchema = schemas.includes('time-profile');
+
+    statuses.push({
+      kind: 'time-profile',
+      status: timeProfile?.functionProfiles.length
+        ? 'supported'
+        : hasTimeProfileSchema
+          ? 'not_exportable'
+          : 'unsupported',
+      reason: timeProfile?.functionProfiles.length
+        ? 'Time Profiler samples were exported and parsed.'
+        : hasTimeProfileSchema
+          ? 'xctrace exposed Time Profiler data, but no usable rows were exported.'
+          : 'The trace TOC does not expose Time Profiler data.',
+      sourceSchemas: hasTimeProfileSchema ? ['time-profile'] : [],
+    });
+
+    for (const kind of INSTRUMENT_ORDER) {
+      const matchingSchemas = this.matchSchemasForKind(schemas, kind);
+      const analysis = analyses.get(kind);
+      const noExportable = analysis?.findings.some((finding) =>
+        finding.title.startsWith('No exportable ')
+      ) ?? false;
+      const hasUsableData = !!analysis && (analysis.metrics.length > 0 || !noExportable);
+      const hasSkippedExports = this.exportAttempts.some((attempt) =>
+        attempt.kind === kind && attempt.status === 'skipped'
+      );
+
+      let status: SupportStatus;
+      let reason: string;
+      if (matchingSchemas.length === 0) {
+        status = 'unsupported';
+        reason = `The trace TOC does not expose ${kind} schemas.`;
+      } else if (hasUsableData && (noExportable || hasSkippedExports)) {
+        status = 'partial';
+        reason = `${this.instrumentSectionName(kind)} data was parsed, but some schemas were not exportable.`;
+      } else if (hasUsableData) {
+        status = 'supported';
+        reason = `${this.instrumentSectionName(kind)} data was exported and parsed.`;
+      } else {
+        status = 'not_exportable';
+        reason = `xctrace exposed ${kind} schemas, but no usable rows were exported.`;
+      }
+
+      if (analysis) {
+        analysis.supportStatus = status;
+      }
+
+      statuses.push({
+        kind,
+        status,
+        reason,
+        sourceSchemas: analysis?.sourceSchemas ?? matchingSchemas,
+      });
+    }
+
+    return statuses;
+  }
+
+  private instrumentSectionName(kind: TraceKind): string {
+    switch (kind) {
+      case 'time-profile':
+        return 'Time Profiler';
+      case 'memory':
+        return 'Memory';
+      case 'network':
+        return 'Network';
+      case 'energy':
+        return 'Energy';
+      case 'allocations':
+        return 'Allocations';
+      case 'leaks':
+        return 'Leaks';
     }
   }
 
@@ -568,6 +784,82 @@ export class TraceParser {
     return Array.from(schemas);
   }
 
+  private extractTableDescriptors(tocData: any): TraceTableDescriptor[] {
+    const descriptors: TraceTableDescriptor[] = [];
+    const seen = new Set<string>();
+    const runs = this.arrayOf(tocData['trace-toc']?.run);
+
+    const addDescriptor = (
+      node: any,
+      runNumber: number,
+      xpath: string,
+      trackName?: string,
+      detailName?: string
+    ) => {
+      const schema = node?.['@_schema'];
+      if (typeof schema !== 'string' || !schema) {
+        return;
+      }
+      const key = `${runNumber}:${schema}:${xpath}`;
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      descriptors.push({
+        runNumber,
+        schema,
+        xpath,
+        trackName,
+        detailName,
+      });
+    };
+
+    const visit = (
+      node: any,
+      runNumber: number,
+      path: string,
+      trackName?: string,
+      detailName?: string
+    ) => {
+      if (!node || typeof node !== 'object') {
+        return;
+      }
+
+      addDescriptor(node, runNumber, path, trackName, detailName);
+
+      for (const [key, value] of Object.entries(node)) {
+        if (key.startsWith('@_')) {
+          continue;
+        }
+        for (const child of this.arrayOf(value)) {
+          if (!child || typeof child !== 'object') {
+            continue;
+          }
+          const childTrackName = key === 'track'
+            ? this.nodeName(child) ?? trackName
+            : trackName;
+          const childDetailName = key === 'detail'
+            ? this.nodeName(child) ?? detailName
+            : detailName;
+          visit(
+            child,
+            runNumber,
+            `${path}/${this.xpathSegment(key, child)}`,
+            childTrackName,
+            childDetailName
+          );
+        }
+      }
+    };
+
+    runs.forEach((run, index) => {
+      const runNumber = this.parseNumeric(run?.['@_number']) ?? index + 1;
+      visit(run, runNumber, `/trace-toc/run[@number="${runNumber}"]`);
+    });
+
+    return descriptors;
+  }
+
   private unexportableFinding(rows: TableRow[], title: string): InstrumentFinding[] {
     if (rows.length === 0 || rows.every((row) => row.Exportable === false)) {
       return [
@@ -589,14 +881,37 @@ export class TraceParser {
     return schemas.filter((schema) => patterns.some((pattern) => pattern.test(schema)));
   }
 
-  private async exportRowsForSchemas(tracePath: string, schemas: string[]): Promise<TableRow[]> {
+  private async exportRowsForSchemas(
+    tracePath: string,
+    schemas: string[],
+    tableDescriptors: TraceTableDescriptor[],
+    kind: Exclude<TraceKind, 'time-profile'>
+  ): Promise<TableRow[]> {
     const rows: TableRow[] = [];
 
     for (const schema of schemas) {
+      const descriptor = tableDescriptors.find((table) => table.schema === schema);
+      const xpath = descriptor?.xpath;
       try {
-        const xml = await this.exporter.exportTable(tracePath, schema);
-        rows.push(...this.parseTableRows(xml));
-      } catch {
+        const xml = xpath && this.exporter.exportXPath
+          ? await this.exporter.exportXPath(tracePath, xpath)
+          : await this.exporter.exportTable(tracePath, schema, descriptor?.runNumber);
+        const parsedRows = this.parseTableRows(xml);
+        this.exportAttempts.push({
+          kind,
+          status: parsedRows.length > 0 ? 'success' : 'empty',
+          schema,
+          xpath,
+        });
+        rows.push(...parsedRows);
+      } catch (error) {
+        this.exportAttempts.push({
+          kind,
+          status: 'failed',
+          schema,
+          xpath,
+          message: (error as Error).message,
+        });
         rows.push({
           Schema: schema,
           Exportable: false,
@@ -626,22 +941,25 @@ export class TraceParser {
     }
 
     const parsed = this.xmlParser.parse(xmlData);
-    const table = parsed.table ?? this.findFirstKey(parsed, 'table');
+    const table =
+      parsed.table ?? parsed['trace-query-result']?.node ?? this.findFirstKey(parsed, 'table');
     if (!table) {
       return [];
     }
 
-    const rows: any[] = Array.isArray(table.row) ? table.row : [table.row].filter(Boolean);
-    return rows.map((row) => this.flattenRow(row));
+    return this.rowsFromTableNode(table).map((row) => this.flattenRow(row));
   }
 
   private rowsFromTableNode(table: any): any[] {
     const nodes = Array.isArray(table) ? table : [table];
     return nodes.flatMap((node) => {
-      if (!node?.row) {
-        return [];
+      if (node?.row) {
+        return Array.isArray(node.row) ? node.row : [node.row];
       }
-      return Array.isArray(node.row) ? node.row : [node.row];
+      if (node?.table) {
+        return this.rowsFromTableNode(node.table);
+      }
+      return [];
     });
   }
 
@@ -743,6 +1061,32 @@ export class TraceParser {
     return key.replace(/^@_/, '').trim();
   }
 
+  private arrayOf<T>(value: T | T[] | undefined | null): T[] {
+    if (value === undefined || value === null) {
+      return [];
+    }
+    return Array.isArray(value) ? value : [value];
+  }
+
+  private nodeName(node: any): string | undefined {
+    const name = node?.['@_name'] ?? node?.name ?? node?.['@_title'] ?? node?.title;
+    return typeof name === 'string' && name ? name : undefined;
+  }
+
+  private xpathSegment(key: string, node: any): string {
+    const schema = node?.['@_schema'];
+    if (typeof schema === 'string' && schema) {
+      return `${key}[@schema="${schema}"]`;
+    }
+
+    const name = this.nodeName(node);
+    if (name) {
+      return `${key}[@name="${name}"]`;
+    }
+
+    return key;
+  }
+
   private parseScalar(value: any): string | number | boolean {
     if (typeof value === 'number' || typeof value === 'boolean') {
       return value;
@@ -760,25 +1104,29 @@ export class TraceParser {
       return undefined;
     }
 
-    const match = value.replace(/,/g, '').match(/-?\d+(?:\.\d+)?/);
+    const normalized = value.trim().replace(/,/g, '');
+    const match = normalized.match(/^(-?\d+(?:\.\d+)?)(?:\s*([a-zA-Z%][a-zA-Z%/]*))?$/);
     if (!match) {
       return undefined;
     }
 
-    const number = Number(match[0]);
+    const number = Number(match[1]);
     if (!Number.isFinite(number)) {
       return undefined;
     }
 
-    const lower = value.toLowerCase();
-    if (/\bgb\b/.test(lower)) {
-      return number * 1024 * 1024 * 1024;
+    const unit = match[2]?.toLowerCase();
+    if (!unit) {
+      return number;
     }
-    if (/\bmb\b/.test(lower)) {
-      return number * 1024 * 1024;
+
+    const byteMultiplier = BYTE_UNIT_MULTIPLIERS[unit];
+    if (byteMultiplier !== undefined) {
+      return number * byteMultiplier;
     }
-    if (/\bkb\b/.test(lower)) {
-      return number * 1024;
+
+    if (!NUMERIC_UNITS.has(unit)) {
+      return undefined;
     }
 
     return number;

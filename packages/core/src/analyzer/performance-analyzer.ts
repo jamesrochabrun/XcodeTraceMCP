@@ -52,6 +52,8 @@ export class PerformanceAnalyzer {
         recommendations: [], // Will be filled by RecommendationEngine
         topFunctions,
         instrumentAnalyses: trace.instrumentAnalyses ?? [],
+        supportStatus: trace.supportStatus,
+        exportAttempts: trace.exportAttempts,
         summary,
       };
     } catch (error) {

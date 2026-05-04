@@ -12,13 +12,14 @@ A TypeScript library for parsing and analyzing Xcode Instruments `.trace` files,
 - 📈 Compare traces to detect performance regressions
 - 💡 Generate actionable optimization recommendations
 - 🎯 Pattern-based suggestion engine (image caching, async operations, etc.)
-- ⚡️ Fast and efficient TypeScript implementation
+- 🧾 Support status and export diagnostics for honest reporting
 
 ## What The Core Package Does
 
 The core package is the reusable analysis layer behind the MCP server. It does not speak MCP directly. It provides:
 
 - `xctrace` process utilities for recording, exporting TOCs, exporting XPath tables, and exporting HAR data
+- Capability detection and symbolication utilities for local `xctrace`
 - `TraceParser` for normalizing Xcode `.trace` XML/HAR data into typed TypeScript structures
 - `PerformanceAnalyzer` for Time Profiler statistics, bottlenecks, and summaries
 - `RecommendationEngine` for CPU, memory, network, allocation, leak, and energy recommendations
@@ -162,7 +163,9 @@ import {
   exportHAR,
   listTemplates,
   listDevices,
+  getXCTraceCapabilities,
   recordTrace,
+  symbolicateTrace,
 } from '@xctrace-analyzer/core';
 
 // Check availability
@@ -177,12 +180,22 @@ const xml = await exportTable('/path/to/trace.trace', 'time-profile');
 // Export network HAR data when available
 const har = await exportHAR('/path/to/network.trace');
 
+// Inspect local xctrace capabilities
+const capabilities = await getXCTraceCapabilities();
+
 // Record a running app with the Leaks template
 await recordTrace({
   template: 'Leaks',
   processName: 'MyApp',
   duration: 60,
   outputPath: '/path/to/MyApp-leaks.trace',
+});
+
+// Symbolicate to a separate output trace before analysis
+await symbolicateTrace({
+  inputPath: '/path/to/app.trace',
+  outputPath: '/path/to/app-symbolicated.trace',
+  dsymPath: '/path/to/App.dSYM',
 });
 
 // Record one combined profiling trace
@@ -211,6 +224,8 @@ interface Analysis {
   recommendations: Recommendation[];
   topFunctions: FunctionProfile[];
   instrumentAnalyses: InstrumentAnalysis[];
+  supportStatus?: AnalysisSupportStatus[];
+  exportAttempts?: ExportAttempt[];
   summary: string;
 }
 ```
@@ -430,11 +445,11 @@ try {
 }
 ```
 
-## Performance
+## Production Notes
 
-- Parses typical 50MB trace files in < 2 seconds
-- Memory efficient streaming XML parsing
-- Handles traces with 10,000+ function profiles
+- This package analyzes data that `xcrun xctrace export` exposes through TOC, XPath, and HAR exports.
+- It reports unsupported or non-exportable data explicitly instead of assuming Instruments.app GUI parity.
+- Large-trace streaming and broader template coverage are tracked as production hardening work, not current guarantees.
 
 ## License
 

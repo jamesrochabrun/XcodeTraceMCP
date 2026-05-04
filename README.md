@@ -2,7 +2,9 @@
 
 > Intelligent performance analysis for Xcode Instruments traces, powered by AI via Model Context Protocol.
 
-Ask Claude to analyze Xcode Instruments traces, detect regressions for Time Profiler traces, and get actionable optimization recommendations—all through natural conversation.
+Ask Claude to record and analyze Xcode Instruments traces, detect Time Profiler regressions, and get actionable optimization recommendations through a local MCP server.
+
+This project is a **headless Instruments companion**, not a full replacement for Instruments.app. It automates the parts Apple exposes through `xcrun xctrace`: recording, TOC/XML/HAR export, symbolication, parsing, reports, and regression checks. When a template or Instruments view is not exportable, the server reports that limitation instead of inventing data.
 
 ---
 
@@ -122,11 +124,11 @@ Claude: [Lists all templates on your system]
 - 📊 **Regression analysis** - Compare builds to catch performance issues
 - 💡 **Smart recommendations** - Pattern-based suggestions with Swift code examples
 - 🤖 **Natural language interface** - Just ask Claude in plain English
-- ⚡️ **Fast** - Analyzes typical traces in < 2 seconds
+- 🧾 **Honest diagnostics** - Reports support status, export attempts, and non-exportable data
 
 ## Supported Scope
 
-This repository is a local, repo-installable MCP server. `profile_running_app` can attach to a running process with one combined `xcrun xctrace record` session, save the `.trace`, and analyze it. `track_running_app` records one specific template. `analyze_trace` auto-detects Time Profiler, Memory, Network, Energy, Allocations, and Leaks data exported by `xcrun xctrace`. `compare_traces` remains focused on Time Profiler regressions. Resources/prompts, historical tracking, npm publishing, and a standalone CLI are future work.
+This repository is a local, repo-installable MCP server. `profile_running_app` can attach to a process, launch a target, or record all processes with one combined `xcrun xctrace record` session, save the `.trace`, and analyze it. `track_running_app` records one specific template. `analyze_trace` auto-detects Time Profiler, Memory, Network, Energy, Allocations, and Leaks data exported by `xcrun xctrace`; each area is reported as supported, partial, not exportable, or unsupported. `compare_traces` remains focused on Time Profiler regressions. Public npm publishing, a standalone CLI, and full Instruments.app GUI parity are out of scope for the current internal production target.
 
 ---
 
@@ -149,15 +151,26 @@ console.log(analysis.recommendations);
 MCP server exposing the core library to AI assistants.
 
 **Tools:**
+- `profile_advisor` - First-step helper for vague requests like "profile my app"; suggests the best workflow and exact next MCP tool call
 - `profile_running_app` - Run one combined profiling recording against a running app and return one report. For macOS, the default `full` preset records Time Profiler with Leaks, Allocations, and HTTP Traffic instruments. Use `full-ios` when profiling iOS/iPadOS and you want Power Profiler too.
 - `track_running_app` - Attach to a running app, capture a trace, and optionally analyze it immediately
-- `analyze_trace` - Analyze Time Profiler bottlenecks plus supported Memory, Network, Energy, Allocations, and Leaks data
-- `compare_traces` - Detect Time Profiler regressions between builds
+- `analyze_trace` - Analyze Time Profiler bottlenecks plus supported Memory, Network, Energy, Allocations, and Leaks data; supports optional dSYM symbolication and JSON output
+- `compare_traces` - Detect Time Profiler regressions between builds; supports optional dSYM symbolication and JSON output
 - `list_templates`, `list_devices`, `check_xctrace`
 
 ---
 
 ## MCP Tool Reference
+
+### `profile_advisor`
+
+Use this first when the request is vague, such as "profile my app" or "what can we inspect?" It infers the likely intent, checks local `xctrace` capabilities, and returns a recommended tool call plus alternatives.
+
+It can suggest:
+- `profile_running_app` with `full`, `cpu`, `memory`, `network`, or `full-ios`
+- `track_running_app` when a specific template is more appropriate
+- `analyze_trace` for an existing `.trace`
+- `compare_traces` for baseline/current regression checks
 
 ### `profile_running_app`
 
@@ -167,6 +180,7 @@ It performs one `xcrun xctrace record` call. For the macOS `full` preset, it use
 
 Report sections include:
 - Summary, trace path, process, preset, and recording strategy
+- Support matrix and export diagnostics
 - CPU / Time Profiler bottlenecks
 - Leaks findings when exportable
 - Allocation metrics and churn findings when exportable
@@ -183,7 +197,7 @@ Presets:
 
 ### `track_running_app`
 
-Use this when the user wants a specific Instruments template rather than a full preset. It records one trace with the requested template, then optionally analyzes it.
+Use this when the user wants a specific Instruments template rather than a full preset. It records one trace with the requested template, then optionally analyzes it. It supports attach, launch, and all-processes targets; `processName` remains the attach shorthand.
 
 Common templates:
 - `Leaks` for memory leak checks
@@ -199,6 +213,7 @@ It can report:
 - Time Profiler bottlenecks, hot functions, and recommendations
 - Additional Memory, Network, Energy, Allocations, and Leaks sections when Xcode exposes usable tables
 - Clear no-data findings when a schema exists but Xcode does not export usable rows
+- Machine-readable JSON via `outputFormat: "json"` or Markdown plus JSON via `outputFormat: "both"`
 
 ### `compare_traces`
 
@@ -326,18 +341,24 @@ Before sending changes, run:
 pnpm verify
 ```
 
+To smoke-test the local Xcode/xctrace installation:
+
+```bash
+pnpm test:integration
+```
+
 To inspect the schemas exposed by local traces without committing trace files:
 
 ```bash
 pnpm inspect:trace test-traces/memory.trace test-traces/network.trace
 ```
 
-To contribute:
+To contribute production support:
 
-1. Test with real trace files and report issues
-2. Add support for more Instruments templates (Memory, Network, etc.)
-3. Improve recommendation patterns
-4. Add or update unit tests
+1. Add or update real exported XML/HAR fixtures, not committed raw `.trace` files
+2. Update the support matrix and docs for any newly supported template/schema
+3. Improve recommendation patterns only when backed by parsed evidence
+4. Add unit tests plus optional local integration validation
 
 ---
 

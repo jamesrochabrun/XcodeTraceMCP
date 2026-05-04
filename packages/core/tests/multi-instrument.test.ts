@@ -33,6 +33,7 @@ const tables: Record<string, string> = {
       <row>
         <column name="Total Allocations" value="4200"/>
         <column name="Total Bytes" value="125829120"/>
+        <column name="Type" value="UIImage2x"/>
       </row>
       <row>
         <column name="Type" value="UIImage"/>
@@ -46,20 +47,20 @@ const tables: Record<string, string> = {
       <row>
         <column name="Leaked Bytes" value="1048576"/>
         <column name="Leaks" value="3"/>
-        <column name="Call Site" value="ImageCache.retainCycle"/>
+        <column name="Call Site" value="ImageCache2.retainCycle"/>
       </row>
     </table>
   `,
   'network-connections': `
     <table schema="network-connections">
       <row>
-        <column name="URL" value="https://api.example.com/feed"/>
+        <column name="URL" value="https://api.example.com/v1/feed"/>
         <column name="Status" value="200"/>
         <column name="Bytes In" value="2048"/>
         <column name="Bytes Out" value="512"/>
       </row>
       <row>
-        <column name="URL" value="https://api.example.com/sync"/>
+        <column name="URL" value="https://api.example.com/v1/sync"/>
         <column name="Status" value="500"/>
         <column name="Bytes In" value="1024"/>
         <column name="Bytes Out" value="512"/>
@@ -75,6 +76,21 @@ const tables: Record<string, string> = {
       </row>
     </table>
   `,
+};
+
+const wrapXPathResult = (tableXML: string) => {
+  const rows = tableXML
+    .trim()
+    .replace(/^<table\b[^>]*>/, '')
+    .replace(/<\/table>$/, '');
+
+  return `
+    <trace-query-result>
+      <node xpath="//trace-toc[1]/run[1]/data[1]/table[1]">
+        ${rows}
+      </node>
+    </trace-query-result>
+  `;
 };
 
 describe('TraceParser multi-instrument support', () => {
@@ -98,6 +114,18 @@ describe('TraceParser multi-instrument support', () => {
       'allocations',
       'leaks',
     ]);
+    expect(trace.supportStatus).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'memory', status: 'supported' }),
+        expect.objectContaining({ kind: 'network', status: 'supported' }),
+      ])
+    );
+    expect(trace.exportAttempts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'toc', status: 'success' }),
+        expect.objectContaining({ kind: 'memory', status: 'success', schema: 'memory-statistics' }),
+      ])
+    );
 
     expect(trace.instrumentAnalyses).toContainEqual(
       expect.objectContaining({
@@ -118,6 +146,19 @@ describe('TraceParser multi-instrument support', () => {
         metrics: expect.arrayContaining([
           expect.objectContaining({ name: 'Requests', numericValue: 2 }),
           expect.objectContaining({ name: 'Failed Requests', numericValue: 1 }),
+          expect.objectContaining({ name: 'Top Host', value: 'api.example.com (2 requests)' }),
+        ]),
+      })
+    );
+
+    expect(trace.instrumentAnalyses).toContainEqual(
+      expect.objectContaining({
+        kind: 'allocations',
+        metrics: expect.arrayContaining([
+          expect.objectContaining({
+            name: 'Top Allocation Site',
+            value: 'UIImage2x (120.0 MB)',
+          }),
         ]),
       })
     );
@@ -125,8 +166,82 @@ describe('TraceParser multi-instrument support', () => {
     expect(trace.instrumentAnalyses).toContainEqual(
       expect.objectContaining({
         kind: 'leaks',
+        metrics: expect.arrayContaining([
+          expect.objectContaining({
+            name: 'Top Leak Site',
+            value: 'ImageCache2.retainCycle (1.0 MB)',
+          }),
+        ]),
         findings: expect.arrayContaining([
           expect.objectContaining({ title: 'Leaks detected' }),
+        ]),
+      })
+    );
+  });
+
+  it('parses wrapped XPath exports for instrument tables', async () => {
+    const parser = new TraceParser({
+      exportTOC: async () => tocXML,
+      exportTable: async (_tracePath, schema) => {
+        if (schema === 'time-profile') {
+          return '';
+        }
+        return tables[schema] ? wrapXPathResult(tables[schema]) : '';
+      },
+    });
+
+    const trace = await parser.parseTrace('packages/core/package.json');
+
+    expect(trace.instrumentAnalyses?.map((analysis) => analysis.kind)).toEqual([
+      'memory',
+      'network',
+      'energy',
+      'allocations',
+      'leaks',
+    ]);
+    expect(trace.instrumentAnalyses).toContainEqual(
+      expect.objectContaining({
+        kind: 'memory',
+        metrics: expect.arrayContaining([
+          expect.objectContaining({ name: 'Peak Memory', numericValue: 734003200 }),
+        ]),
+      })
+    );
+    expect(trace.instrumentAnalyses).toContainEqual(
+      expect.objectContaining({
+        kind: 'network',
+        metrics: expect.arrayContaining([
+          expect.objectContaining({ name: 'Top Host', value: 'api.example.com (2 requests)' }),
+        ]),
+      })
+    );
+    expect(trace.instrumentAnalyses).toContainEqual(
+      expect.objectContaining({
+        kind: 'allocations',
+        metrics: expect.arrayContaining([
+          expect.objectContaining({
+            name: 'Top Allocation Site',
+            value: 'UIImage2x (120.0 MB)',
+          }),
+        ]),
+      })
+    );
+    expect(trace.instrumentAnalyses).toContainEqual(
+      expect.objectContaining({
+        kind: 'leaks',
+        metrics: expect.arrayContaining([
+          expect.objectContaining({
+            name: 'Top Leak Site',
+            value: 'ImageCache2.retainCycle (1.0 MB)',
+          }),
+        ]),
+      })
+    );
+    expect(trace.instrumentAnalyses).toContainEqual(
+      expect.objectContaining({
+        kind: 'energy',
+        metrics: expect.arrayContaining([
+          expect.objectContaining({ name: 'Energy Impact', numericValue: 82 }),
         ]),
       })
     );

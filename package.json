@@ -14,6 +14,7 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm --filter @xctrace-analyzer/core typecheck && pnpm --filter @xctrace-analyzer/core build && pnpm --filter @xctrace-analyzer/mcp-server typecheck",
     "test": "vitest run",
+    "test:integration": "node scripts/integration-smoke.mjs",
     "verify": "pnpm typecheck && pnpm test && pnpm build",
     "clean": "pnpm -r clean",
     "dev:core": "pnpm --filter @xctrace-analyzer/core dev",

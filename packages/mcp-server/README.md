@@ -2,7 +2,9 @@
 
 > Model Context Protocol server for intelligent Xcode Instruments trace analysis
 
-This MCP server provides AI assistants like Claude with the ability to analyze Xcode Instruments performance traces, detect Time Profiler bottlenecks, summarize Memory/Network/Energy/Allocations/Leaks data, identify Time Profiler regressions, and provide actionable optimization recommendations.
+This MCP server provides AI assistants like Claude with the ability to automate headless `xcrun xctrace` workflows: record traces, symbolicate traces, export TOC/XML/HAR data, detect Time Profiler bottlenecks, summarize exportable Memory/Network/Energy/Allocations/Leaks data, identify Time Profiler regressions, and provide actionable recommendations.
+
+It is an **honest headless companion** for Instruments.app, not a complete GUI replacement. Any template or view that `xctrace` cannot export is reported as unsupported or not exportable.
 
 ## Features
 
@@ -11,8 +13,9 @@ This MCP server provides AI assistants like Claude with the ability to analyze X
 - 🧭 **Multi-Instrument Analysis** - Auto-detects Memory, Network, Energy, Allocations, and Leaks data when exportable
 - 📊 **Regression Detection** - Compare traces to find performance regressions
 - 💡 **Actionable Recommendations** - Get specific optimization suggestions with code examples
+- 🧾 **Structured Diagnostics** - Support matrix, export attempts, and JSON output for CI or agents
 - 🤖 **Natural Language Interface** - Use Claude to interact with your performance data
-- ⚡️ **Fast** - Built on TypeScript with efficient parsing
+- ⚙️ **Local-first** - Runs through your installed Xcode Command Line Tools
 
 ## Installation
 
@@ -46,22 +49,39 @@ pnpm verify
 ## Tool Selection Guide
 
 - Use `profile_running_app` for "start profiling", "full report", or "record all issues" requests against an already-running app.
+- Use `profile_advisor` first when the request is vague and the user needs to choose what kind of profiling to run.
 - Use `track_running_app` for a single explicit Instruments template such as Leaks or Allocations.
 - Use `analyze_trace` when the user already has a `.trace` file.
 - Use `compare_traces` when the user asks whether a current build regressed against a baseline.
 - Use `list_templates`, `list_devices`, and `check_xctrace` for setup and troubleshooting.
+
+### `profile_advisor`
+
+Suggest the best profiling workflow before recording or analyzing anything. This is the best first tool for requests like "profile my app", "what can we inspect?", or "I don't know which Instruments template to use."
+
+**Parameters:**
+- `request` (optional): Natural-language profiling goal
+- `processName`, `launchCommand`, `tracePath`, `baselinePath`, `currentPath` (optional): Known context
+- `platform` (optional): `macos`, `ios`, or `unknown`
+- `durationSeconds` (optional): Preferred recording duration
+- `outputFormat` (optional): `markdown`, `json`, or `both`
+
+The response includes a recommended next tool call and alternatives for full, CPU, memory/leaks, network, existing trace analysis, and regression comparison.
 
 ### `profile_running_app`
 
 Record a running app once with a profiling preset and return one combined report. `durationSeconds: 60` means one 60-second recording. The preset uses a base template plus additional Instruments where Xcode supports it.
 
 **Parameters:**
-- `processName` (required): Running process name or pid to attach to
+- `processName` (optional): Running process name or pid to attach to; required for attach mode
+- `target` (optional): `attach`, `launch`, or `all-processes`
+- `launchCommand`, `launchArguments`, `environment` (optional): launch target details
 - `preset` (optional): `full`, `full-ios`, `cpu`, `memory`, `network`, or `energy` (default: `full`)
 - `durationSeconds` (optional): Total recording duration in seconds (default: 60)
 - `device` (optional): Device or simulator name/UDID
 - `outputDirectory` (optional): Directory where generated `.trace` files should be saved (default: `test-traces`)
 - `analyze` (optional): Analyze after recording (default: true)
+- `outputFormat` (optional): `markdown`, `json`, or `both` (default: `markdown`)
 
 Preset recordings:
 - `full`: Time Profiler base with Leaks, Allocations, and HTTP Traffic instruments
@@ -73,6 +93,7 @@ Preset recordings:
 
 Report contents:
 - Recording metadata: process, preset, duration, trace path, base template, and instruments
+- Support matrix and export diagnostics
 - CPU / Time Profiler: bottlenecks, top functions, threads, slow function count, and CPU recommendations
 - Leaks: leak count, leaked bytes, top leak sites, and leak findings when Xcode exports usable data
 - Allocations: allocation counts, allocated bytes, top allocation sites, and churn findings when exportable
@@ -89,13 +110,16 @@ Start profiling MyApp for 60 seconds and report all issues
 Attach to a running process with `xcrun xctrace record`, save the generated `.trace`, and optionally analyze it immediately.
 
 **Parameters:**
-- `processName` (required): Running process name or pid to attach to
+- `processName` (optional): Running process name or pid to attach to; required for attach mode
+- `target` (optional): `attach`, `launch`, or `all-processes`
+- `launchCommand`, `launchArguments`, `environment` (optional): launch target details
 - `template` (optional): Instruments template, for example `Leaks`, `Allocations`, `Network`, `Power Profiler`, or `Time Profiler` (default: `Leaks`)
 - `durationSeconds` (optional): Recording duration in seconds (default: 60)
 - `device` (optional): Device or simulator name/UDID
 - `outputDirectory` (optional): Directory where the `.trace` file should be saved (default: `test-traces`)
 - `outputPath` (optional): Exact output `.trace` path. Overrides `outputDirectory`
 - `analyze` (optional): Analyze after recording (default: true)
+- `outputFormat` (optional): `markdown`, `json`, or `both` (default: `markdown`)
 
 **Example with Claude:**
 ```
@@ -112,6 +136,8 @@ Analyze a single trace file for performance issues. The server auto-detects supp
 - `tracePath` (required): Path to .trace file
 - `slowThreshold` (optional): Threshold in ms for slow functions (default: 100)
 - `topN` (optional): Number of top functions to show (default: 10)
+- `dsymPath` (optional): dSYM file or directory. The server writes a temporary symbolicated trace before analysis.
+- `outputFormat` (optional): `markdown`, `json`, or `both`
 
 **Example with Claude:**
 ```
@@ -129,6 +155,8 @@ Compare two Time Profiler traces to detect regressions or improvements.
 - `currentPath` (required): Path to current .trace file
 - `regressionThreshold` (optional): % increase to flag (default: 10)
 - `failOnRegression` (optional): Mark the MCP tool result as an error if a regression is detected (default: false)
+- `baselineDsymPath`, `currentDsymPath` (optional): dSYM paths used to symbolicate temporary traces before comparison
+- `outputFormat` (optional): `markdown`, `json`, or `both`
 
 **Example with Claude:**
 ```
@@ -157,7 +185,7 @@ Show me available devices for profiling
 
 ### `check_xctrace`
 
-Check if xctrace is available and working.
+Check if xctrace is available and report command capabilities, templates, devices, instruments, export modes, and warnings.
 
 **Example with Claude:**
 ```
@@ -336,11 +364,12 @@ Claude: Great! Let's implement image caching...
 ## How It Works
 
 1. **MCP Request**: The client calls a JSON-RPC tool such as `profile_running_app`.
-2. **xctrace Record**: Recording tools call `xcrun xctrace record --attach`. `profile_running_app` uses one combined recording with a base template plus extra instruments.
-3. **xctrace Export**: Analysis calls `xcrun xctrace export --toc`, XPath table exports, and HAR export when available.
-4. **XML / HAR Parsing**: The core parser normalizes Time Profiler rows and supported instrument tables into typed data.
-5. **Analysis Engine**: The analyzer finds bottlenecks, instrument findings, and recommendations.
-6. **MCP Response**: The server returns Markdown reports to the assistant.
+2. **Capability Check**: The server can inspect local `xctrace` version, templates, devices, instruments, export modes, and symbolication support.
+3. **xctrace Record**: Recording tools call `xcrun xctrace record` with attach, launch, or all-processes targets.
+4. **xctrace Export**: Analysis calls `xcrun xctrace export --toc`, TOC-discovered XPath table exports, and HAR export when available.
+5. **XML / HAR Parsing**: The core parser normalizes Time Profiler rows and supported instrument tables into typed data with export diagnostics.
+6. **Analysis Engine**: The analyzer finds bottlenecks, instrument findings, support status, and recommendations.
+7. **MCP Response**: The server returns Markdown, JSON, or both.
 
 ## Troubleshooting
 

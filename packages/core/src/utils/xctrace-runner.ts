@@ -2,19 +2,41 @@
  * Utility for running xctrace commands
  */
 
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { XCTraceError } from '../types.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+const DEFAULT_MAX_BUFFER = 50 * 1024 * 1024;
+const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
+const EXPORT_TOC_TIMEOUT_MS = 10_000;
+const EXPORT_TABLE_TIMEOUT_MS = 5_000;
+const EXPORT_HAR_TIMEOUT_MS = 5_000;
+
+async function runXcrun(args: string[], timeout?: number): Promise<string> {
+  const { stdout } = await execFileAsync('xcrun', args, {
+    maxBuffer: DEFAULT_MAX_BUFFER,
+    timeout: timeout ?? DEFAULT_COMMAND_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
+  });
+  return stdout.trimEnd();
+}
+
+function processErrorOutput(error: any): string {
+  const output = [error.stdout, error.stderr]
+    .filter((value) => typeof value === 'string' && value.trim())
+    .join('\n')
+    .trim();
+
+  return output || error.message || '';
+}
 
 /**
  * Check if xctrace is available on the system
  */
 export async function isXCTraceAvailable(): Promise<boolean> {
   try {
-    await execAsync('which xcrun');
-    await execAsync('xcrun xctrace version');
+    await runXcrun(['xctrace', 'version']);
     return true;
   } catch {
     return false;
@@ -26,8 +48,7 @@ export async function isXCTraceAvailable(): Promise<boolean> {
  */
 export async function getXCTraceVersion(): Promise<string> {
   try {
-    const { stdout } = await execAsync('xcrun xctrace version');
-    return stdout.trim();
+    return (await runXcrun(['xctrace', 'version'])).trim();
   } catch (error) {
     throw new XCTraceError('Failed to get xctrace version', (error as any).code, (error as any).stderr);
   }
@@ -38,8 +59,7 @@ export async function getXCTraceVersion(): Promise<string> {
  */
 export async function exportTOC(tracePath: string): Promise<string> {
   try {
-    const { stdout } = await execAsync(`xcrun xctrace export --input "${tracePath}" --toc`);
-    return stdout;
+    return await runXcrun(['xctrace', 'export', '--input', tracePath, '--toc'], EXPORT_TOC_TIMEOUT_MS);
   } catch (error: any) {
     throw new XCTraceError(
       `Failed to export TOC from trace: ${tracePath}`,
@@ -59,13 +79,28 @@ export async function exportTable(
 ): Promise<string> {
   try {
     const xpath = `/trace-toc/run[@number="${runNumber}"]/data/table[@schema="${schema}"]`;
-    const { stdout } = await execAsync(
-      `xcrun xctrace export --input "${tracePath}" --xpath '${xpath}'`
+    return await runXcrun(
+      ['xctrace', 'export', '--input', tracePath, '--xpath', xpath],
+      EXPORT_TABLE_TIMEOUT_MS
     );
-    return stdout;
   } catch (error: any) {
     throw new XCTraceError(
       `Failed to export table '${schema}' from trace: ${tracePath}`,
+      error.code,
+      error.stderr
+    );
+  }
+}
+
+/**
+ * Export network data as HTTP Archive, when xctrace supports it for the trace.
+ */
+export async function exportHAR(tracePath: string): Promise<string> {
+  try {
+    return await runXcrun(['xctrace', 'export', '--input', tracePath, '--har'], EXPORT_HAR_TIMEOUT_MS);
+  } catch (error: any) {
+    throw new XCTraceError(
+      `Failed to export HAR from trace: ${tracePath}`,
       error.code,
       error.stderr
     );
@@ -77,7 +112,7 @@ export async function exportTable(
  */
 export async function listTemplates(): Promise<string[]> {
   try {
-    const { stdout } = await execAsync('xcrun xctrace list templates');
+    const stdout = await runXcrun(['xctrace', 'list', 'templates']);
     // Parse template names from output
     const lines = stdout.split('\n').filter(line => line.trim());
     return lines.map(line => line.trim()).filter(line => line && !line.startsWith('=='));
@@ -91,7 +126,7 @@ export async function listTemplates(): Promise<string[]> {
  */
 export async function listDevices(): Promise<string[]> {
   try {
-    const { stdout } = await execAsync('xcrun xctrace list devices');
+    const stdout = await runXcrun(['xctrace', 'list', 'devices']);
     const lines = stdout.split('\n').filter(line => line.trim());
     return lines.map(line => line.trim()).filter(line => line && !line.startsWith('=='));
   } catch (error: any) {
@@ -104,37 +139,71 @@ export async function listDevices(): Promise<string[]> {
  */
 export interface RecordOptions {
   template: string;
+  instruments?: string[];
   device?: string;
-  appIdentifier: string;
+  appIdentifier?: string;
+  processName?: string;
+  allProcesses?: boolean;
   duration?: number; // seconds
   outputPath: string;
+  noPrompt?: boolean;
 }
 
-export async function recordTrace(options: RecordOptions): Promise<void> {
+export function buildRecordTraceArgs(options: RecordOptions): string[] {
+  if (!options.processName && !options.appIdentifier && !options.allProcesses) {
+    throw new XCTraceError('Recording requires processName, appIdentifier, or allProcesses');
+  }
+
   const args = [
-    'xcrun xctrace record',
-    `--template '${options.template}'`,
-    `--launch '${options.appIdentifier}'`,
-    `--output '${options.outputPath}'`
+    'xctrace',
+    'record',
+    '--template',
+    options.template,
   ];
 
+  for (const instrument of options.instruments ?? []) {
+    args.push('--instrument', instrument);
+  }
+
+  if (options.processName) {
+    args.push('--attach', options.processName);
+  } else if (options.allProcesses) {
+    args.push('--all-processes');
+  } else if (options.appIdentifier) {
+    args.push('--launch', '--', options.appIdentifier);
+  }
+
   if (options.device) {
-    args.push(`--device '${options.device}'`);
+    args.push('--device', options.device);
   }
 
   if (options.duration) {
-    args.push(`--time-limit ${options.duration}s`);
+    args.push('--time-limit', `${options.duration}s`);
   }
 
-  const command = args.join(' ');
+  args.push('--output', options.outputPath);
+
+  if (options.noPrompt !== false) {
+    args.push('--no-prompt');
+  }
+
+  return args;
+}
+
+export async function recordTrace(options: RecordOptions): Promise<void> {
+  const args = buildRecordTraceArgs(options);
 
   try {
-    await execAsync(command, { timeout: (options.duration || 30) * 1000 + 10000 });
+    await runXcrun(args, (options.duration || 30) * 1000 + 30000);
   } catch (error: any) {
+    const details = processErrorOutput(error);
     throw new XCTraceError(
-      `Failed to record trace for ${options.appIdentifier}`,
+      [
+        `Failed to record trace for ${options.processName ?? options.appIdentifier ?? 'all processes'}`,
+        details,
+      ].filter(Boolean).join(': '),
       error.code,
-      error.stderr
+      details
     );
   }
 }

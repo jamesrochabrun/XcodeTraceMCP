@@ -2,6 +2,7 @@
   "name": "xctrace-analyzer-monorepo",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@10.6.3+sha512.bb45e34d50a9a76e858a95837301bfb6bd6d35aea2c5d52094fa497a467c43f5c440103ce2511e9e0a2f89c3d6071baac3358fc68ac6fb75e2ceb3d2736065e6",
   "description": "Intelligent Xcode Instruments trace analysis for AI assistants",
   "keywords": ["xcode", "instruments", "performance", "mcp", "ai"],
   "author": "James Rochabrun",
@@ -11,10 +12,13 @@
   ],
   "scripts": {
     "build": "pnpm -r build",
-    "test": "pnpm -r test",
+    "typecheck": "pnpm --filter @xctrace-analyzer/core typecheck && pnpm --filter @xctrace-analyzer/core build && pnpm --filter @xctrace-analyzer/mcp-server typecheck",
+    "test": "vitest run",
+    "verify": "pnpm typecheck && pnpm test && pnpm build",
     "clean": "pnpm -r clean",
     "dev:core": "pnpm --filter @xctrace-analyzer/core dev",
     "dev:mcp": "pnpm --filter @xctrace-analyzer/mcp-server dev",
+    "inspect:trace": "node scripts/inspect-trace-schemas.mjs",
     "lint": "eslint . --ext .ts,.tsx"
   },
   "devDependencies": {

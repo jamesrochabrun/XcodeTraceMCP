@@ -2,7 +2,7 @@
 
 > Intelligent performance analysis for Xcode Instruments traces, powered by AI via Model Context Protocol.
 
-Ask Claude to analyze your app's performance, detect regressions, and get actionable optimization recommendations—all through natural conversation.
+Ask Claude to analyze Xcode Instruments traces, detect regressions for Time Profiler traces, and get actionable optimization recommendations—all through natural conversation.
 
 ---
 
@@ -11,8 +11,8 @@ Ask Claude to analyze your app's performance, detect regressions, and get action
 ### 1. Build
 
 ```bash
-pnpm install
-pnpm build
+pnpm install --frozen-lockfile
+pnpm verify
 ```
 
 ### 2. Configure Your Claude Client
@@ -88,10 +88,16 @@ Claude: I've analyzed your trace. Found 2 critical bottlenecks:
 
 ## What It Does
 
-### Analyze Traces
+### Profile Running Apps
+```
+You: Profile the running app MyApp for 60 seconds with the full preset
+Claude: [Records one combined xctrace session and reports CPU, leaks, allocations, and network findings]
+```
+
+### Analyze Existing Traces
 ```
 You: Analyze /path/to/app.trace
-Claude: [Identifies bottlenecks, provides recommendations with code examples]
+Claude: [Identifies Time Profiler bottlenecks and Memory, Network, Energy, Allocations, or Leaks findings when those instruments are present]
 ```
 
 ### Detect Regressions
@@ -111,10 +117,16 @@ Claude: [Lists all templates on your system]
 ## Features
 
 - 🔍 **Automatic bottleneck detection** - Finds slow functions, calculates impact
+- 🎥 **Automated recording** - Attach to a running app, capture a trace, and analyze it in one MCP call
+- 🧭 **Multi-instrument analysis** - Auto-detects Memory, Network, Energy, Allocations, and Leaks data
 - 📊 **Regression analysis** - Compare builds to catch performance issues
 - 💡 **Smart recommendations** - Pattern-based suggestions with Swift code examples
 - 🤖 **Natural language interface** - Just ask Claude in plain English
 - ⚡️ **Fast** - Analyzes typical traces in < 2 seconds
+
+## Supported Scope
+
+This repository is a local, repo-installable MCP server. `profile_running_app` can attach to a running process with one combined `xcrun xctrace record` session, save the `.trace`, and analyze it. `track_running_app` records one specific template. `analyze_trace` auto-detects Time Profiler, Memory, Network, Energy, Allocations, and Leaks data exported by `xcrun xctrace`. `compare_traces` remains focused on Time Profiler regressions. Resources/prompts, historical tracking, npm publishing, and a standalone CLI are future work.
 
 ---
 
@@ -137,9 +149,66 @@ console.log(analysis.recommendations);
 MCP server exposing the core library to AI assistants.
 
 **Tools:**
-- `analyze_trace` - Analyze performance bottlenecks
-- `compare_traces` - Detect regressions between builds
+- `profile_running_app` - Run one combined profiling recording against a running app and return one report. For macOS, the default `full` preset records Time Profiler with Leaks, Allocations, and HTTP Traffic instruments. Use `full-ios` when profiling iOS/iPadOS and you want Power Profiler too.
+- `track_running_app` - Attach to a running app, capture a trace, and optionally analyze it immediately
+- `analyze_trace` - Analyze Time Profiler bottlenecks plus supported Memory, Network, Energy, Allocations, and Leaks data
+- `compare_traces` - Detect Time Profiler regressions between builds
 - `list_templates`, `list_devices`, `check_xctrace`
+
+---
+
+## MCP Tool Reference
+
+### `profile_running_app`
+
+Best default tool when a user says "start profiling", "record performance", or "give me a full report" for an app that is already running.
+
+It performs one `xcrun xctrace record` call. For the macOS `full` preset, it uses `Time Profiler` as the base template and adds `Leaks`, `Allocations`, and `HTTP Traffic` as Instruments. A `durationSeconds` value of `60` means one 60-second recording, plus save/export/analyze time.
+
+Report sections include:
+- Summary, trace path, process, preset, and recording strategy
+- CPU / Time Profiler bottlenecks
+- Leaks findings when exportable
+- Allocation metrics and churn findings when exportable
+- Network request metrics and failures when HAR/CFNetwork data is exportable
+- Prioritized recommendations aggregated across all findings
+
+Presets:
+- `full`: Time Profiler + Leaks + Allocations + HTTP Traffic
+- `full-ios`: Time Profiler + Leaks + Allocations + HTTP Traffic + Power Profiler
+- `cpu`: Time Profiler only
+- `memory`: Allocations + Leaks
+- `network`: Time Profiler + HTTP Traffic
+- `energy`: Power Profiler only; intended for iOS/iPadOS targets
+
+### `track_running_app`
+
+Use this when the user wants a specific Instruments template rather than a full preset. It records one trace with the requested template, then optionally analyzes it.
+
+Common templates:
+- `Leaks` for memory leak checks
+- `Allocations` for allocation churn
+- `Network` for network-only traces
+- `Time Profiler` for CPU sampling
+
+### `analyze_trace`
+
+Use this for an existing `.trace` file. The parser reads `xcrun xctrace export --toc`, exports supported schemas, and normalizes results into one analysis model.
+
+It can report:
+- Time Profiler bottlenecks, hot functions, and recommendations
+- Additional Memory, Network, Energy, Allocations, and Leaks sections when Xcode exposes usable tables
+- Clear no-data findings when a schema exists but Xcode does not export usable rows
+
+### `compare_traces`
+
+Use this for Time Profiler regression checks between a baseline and current trace. It compares total time and function-level deltas, then can mark the MCP call as an error when `failOnRegression` is true.
+
+### Discovery And Health Tools
+
+- `list_templates`: shows Instruments templates available on the machine
+- `list_devices`: shows physical devices and simulators available to `xctrace`
+- `check_xctrace`: verifies `xcrun xctrace` availability and reports the installed version
 
 ---
 
@@ -162,6 +231,58 @@ MCP server exposing the core library to AI assistants.
 ---
 
 ## Examples
+
+### Profile a running app
+```
+You: Start profiling MyApp for 60 seconds and report all issues
+
+Claude:
+# Profiling Report
+
+- Process: MyApp
+- Preset: full
+- Recording strategy: combined
+- Duration: 60s
+- Base template: Time Profiler
+- Instruments: Leaks, Allocations, HTTP Traffic
+
+## Summary
+- Overall status: critical issues found
+- Traces recorded: 1/1
+- Traces analyzed: 1/1
+
+## CPU / Time Profiler
+Top bottlenecks and slow functions.
+
+## Leaks
+Leak count, leaked bytes, and leak findings.
+
+## Allocations
+Allocation volume and churn findings.
+
+## Network
+Requests, failures, bytes transferred, and hosts.
+
+For iOS/iPadOS, use the `full-ios` preset to include Energy / Power data.
+```
+
+### Track a running app for leaks
+```
+You: Track MyApp for leaks for 60 seconds on the iPhone 16 Pro Simulator
+
+Claude:
+# Running App Trace Report
+
+- Process: MyApp
+- Template: Leaks
+- Duration: 60s
+- Device: iPhone 16 Pro Simulator
+- Trace: /path/to/XcodeTraceMCP/test-traces/MyApp-Leaks-2026-05-02T16-30-00-000Z.trace
+
+## Additional Instrument Analysis
+### Leaks Analysis
+3 leaks were detected.
+```
 
 ### Analyze a trace
 ```
@@ -199,12 +320,24 @@ The NetworkClient regression is concerning. Should I investigate?
 
 ## Contributing
 
-This is a working MVP. To contribute:
+Before sending changes, run:
+
+```bash
+pnpm verify
+```
+
+To inspect the schemas exposed by local traces without committing trace files:
+
+```bash
+pnpm inspect:trace test-traces/memory.trace test-traces/network.trace
+```
+
+To contribute:
 
 1. Test with real trace files and report issues
 2. Add support for more Instruments templates (Memory, Network, etc.)
 3. Improve recommendation patterns
-4. Add unit tests
+4. Add or update unit tests
 
 ---
 

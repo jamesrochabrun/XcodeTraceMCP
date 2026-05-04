@@ -16,10 +16,11 @@
   ],
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc --noEmit --tsBuildInfoFile typecheck.tsbuildinfo",
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist *.tsbuildinfo"
   },
   "keywords": ["xcode", "instruments", "xctrace", "performance", "analysis"],
   "author": "James Rochabrun",

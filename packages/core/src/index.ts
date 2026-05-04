@@ -8,7 +8,7 @@
 export * from './types.js';
 
 // Export parser
-export { TraceParser, parseTrace } from './parser/trace-parser.js';
+export { TraceParser, parseTrace, type TraceExporter } from './parser/trace-parser.js';
 
 // Export analyzers
 export { PerformanceAnalyzer, analyzeTrace } from './analyzer/performance-analyzer.js';
@@ -37,7 +37,9 @@ export async function analyzeTraceFile(
   const analysis = analyzeTrace(parsed, options);
 
   // Add recommendations
-  analysis.recommendations = generateRecommendations(analysis);
+  if (options?.includeRecommendations !== false) {
+    analysis.recommendations = generateRecommendations(analysis);
+  }
 
   return analysis;
 }

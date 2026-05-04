@@ -1,0 +1,96 @@
+# Agent Guide
+
+This repository contains a local Model Context Protocol (MCP) server for Xcode Instruments profiling. The server lets an assistant record or analyze `.trace` files through MCP tools, then returns Markdown reports with CPU, memory, network, allocation, leak, and regression findings.
+
+## Project Architecture
+
+The repo is a pnpm workspace with two packages:
+
+- `packages/core`: reusable TypeScript library for `xcrun xctrace` recording/exporting, trace parsing, analysis, recommendations, and Time Profiler comparisons.
+- `packages/mcp-server`: MCP stdio server that exposes the core library as assistant-callable tools.
+
+High-level flow:
+
+1. An MCP client calls a tool such as `profile_running_app`.
+2. The MCP server validates arguments and delegates to `@xctrace-analyzer/core`.
+3. Core runs `xcrun xctrace` using `execFile` argument arrays.
+4. Core parses `xctrace export --toc`, XPath table XML, and HAR output when available.
+5. Core returns typed analysis objects.
+6. The MCP server formats those objects into Markdown reports.
+
+## MCP Tools
+
+### `profile_running_app`
+
+Use this for broad profiling requests like "start profiling MyApp for 60 seconds" or "give me a full performance report." It records one combined trace, then analyzes it.
+
+Default macOS `full` preset:
+
+- Base template: `Time Profiler`
+- Additional instruments: `Leaks`, `Allocations`, `HTTP Traffic`
+- Duration semantics: `durationSeconds: 60` means one 60-second recording, not 60 seconds per section.
+
+Other presets:
+
+- `cpu`: Time Profiler only
+- `memory`: Allocations base with Leaks instrument
+- `network`: Time Profiler base with HTTP Traffic instrument
+- `energy`: Power Profiler only; intended for iOS/iPadOS
+- `full-ios`: Time Profiler base with Leaks, Allocations, HTTP Traffic, and Power Profiler
+
+Report contents:
+
+- Recording metadata and saved trace path
+- CPU / Time Profiler bottlenecks
+- Leaks findings when exportable
+- Allocation metrics and churn findings when exportable
+- Network requests/failures/transferred bytes when HAR or CFNetwork data is exportable
+- Prioritized recommendations
+
+### `track_running_app`
+
+Use this when the user names one specific Instruments template, such as `Leaks` or `Allocations`. It records one template and optionally analyzes the trace.
+
+### `analyze_trace`
+
+Use this when the user already has a `.trace` file. It does not record. It exports the trace TOC, discovers supported schemas, parses Time Profiler and supported instrument data, then returns one analysis report.
+
+### `compare_traces`
+
+Use this for Time Profiler baseline/current regression checks. It reports total-time deltas, function regressions, improvements, and can mark the MCP result as an error when `failOnRegression` is true.
+
+### Discovery Tools
+
+- `list_templates`: list Instruments templates available on the machine
+- `list_devices`: list physical devices and simulators visible to `xctrace`
+- `check_xctrace`: verify `xcrun xctrace` availability and version
+
+## Operational Notes
+
+- macOS Power Profiler is not supported by Xcode; use `full` for macOS and `full-ios` or `energy` for iOS/iPadOS targets.
+- Do not run separate `xctrace record` sessions in parallel for full profiling. They can contend for kperf/ktrace locks. Use the combined recording path in `profile_running_app`.
+- `xctrace` can save malformed or partial traces even when recording exits nonzero. Surface the underlying `xctrace` stderr/stdout details in reports.
+- Xcode export schemas vary by Xcode version and template. Prefer TOC-driven schema discovery over hard-coded table names.
+- Network analysis should prefer HAR export when available and fall back to XML table exports.
+- Real `.trace` files should stay out of git. Use ignored local directories such as `test-traces/` for manual validation.
+
+## Development Commands
+
+From the repo root:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm verify
+pnpm inspect:trace test-traces/example.trace
+```
+
+`pnpm verify` runs typecheck, tests, and build. Run it before claiming a change is complete or opening a PR.
+
+## Coding Guidelines
+
+- Keep MCP argument validation in `packages/mcp-server/src/index.ts`.
+- Keep recording/export shell boundaries in `packages/core/src/utils/xctrace-runner.ts`.
+- Keep trace parsing and schema normalization in `packages/core/src/parser/trace-parser.ts`.
+- Keep recommendations in `packages/core/src/analyzer/recommendation-engine.ts`.
+- Preserve injectable dependencies in tests so MCP behavior can be tested without launching real `xctrace`.
+- Prefer focused tests around command construction, parser shapes, and MCP formatted output.

@@ -2,24 +2,36 @@
 
 > Core analysis library for Xcode Instruments performance traces
 
-A TypeScript library for parsing and analyzing Xcode Instruments `.trace` files, identifying performance bottlenecks, and generating actionable optimization recommendations.
+A TypeScript library for parsing and analyzing Xcode Instruments `.trace` files, identifying Time Profiler bottlenecks and additional Memory, Network, Energy, Allocations, and Leaks findings.
 
 ## Features
 
 - 📊 Parse Time Profiler traces from xctrace XML output
+- 🧭 Parse Memory, Network, Energy, Allocations, and Leaks tables when exportable
 - 🔍 Identify slow functions and performance bottlenecks
 - 📈 Compare traces to detect performance regressions
 - 💡 Generate actionable optimization recommendations
 - 🎯 Pattern-based suggestion engine (image caching, async operations, etc.)
 - ⚡️ Fast and efficient TypeScript implementation
 
+## What The Core Package Does
+
+The core package is the reusable analysis layer behind the MCP server. It does not speak MCP directly. It provides:
+
+- `xctrace` process utilities for recording, exporting TOCs, exporting XPath tables, and exporting HAR data
+- `TraceParser` for normalizing Xcode `.trace` XML/HAR data into typed TypeScript structures
+- `PerformanceAnalyzer` for Time Profiler statistics, bottlenecks, and summaries
+- `RecommendationEngine` for CPU, memory, network, allocation, leak, and energy recommendations
+- `ComparativeAnalyzer` for Time Profiler baseline/current regression checks
+
 ## Installation
 
 ```bash
-npm install @xctrace-analyzer/core
-# or
-pnpm add @xctrace-analyzer/core
+pnpm install --frozen-lockfile
+pnpm build
 ```
+
+This MVP is intended for local repo usage. Public npm publishing is future work.
 
 ## Quick Start
 
@@ -78,7 +90,7 @@ Compare two trace files for regressions and improvements.
 **Comparison Options:**
 ```typescript
 interface ComparisonOptions {
-  failOnRegression?: boolean;       // throw if regression detected (default: false)
+  failOnRegression?: boolean;       // reserved for MCP/CLI automation (default: false)
   regressionThreshold?: number;     // % increase to flag (default: 10)
   minDuration?: number;             // only compare functions > N ms (default: 10)
 }
@@ -147,6 +159,7 @@ import {
   getXCTraceVersion,
   exportTOC,
   exportTable,
+  exportHAR,
   listTemplates,
   listDevices,
   recordTrace,
@@ -160,7 +173,29 @@ const templates = await listTemplates();
 
 // Export time profile data
 const xml = await exportTable('/path/to/trace.trace', 'time-profile');
+
+// Export network HAR data when available
+const har = await exportHAR('/path/to/network.trace');
+
+// Record a running app with the Leaks template
+await recordTrace({
+  template: 'Leaks',
+  processName: 'MyApp',
+  duration: 60,
+  outputPath: '/path/to/MyApp-leaks.trace',
+});
+
+// Record one combined profiling trace
+await recordTrace({
+  template: 'Time Profiler',
+  instruments: ['Leaks', 'Allocations', 'HTTP Traffic'],
+  processName: 'MyApp',
+  duration: 60,
+  outputPath: '/path/to/MyApp-full.trace',
+});
 ```
+
+`recordTrace` intentionally uses `execFile` argument arrays rather than shell command strings. This keeps paths and process names safe even when they contain spaces.
 
 ## Data Types
 
@@ -175,7 +210,23 @@ interface Analysis {
   bottlenecks: Bottleneck[];
   recommendations: Recommendation[];
   topFunctions: FunctionProfile[];
+  instrumentAnalyses: InstrumentAnalysis[];
   summary: string;
+}
+```
+
+### InstrumentAnalysis
+
+Normalized analysis for non-Time-Profiler instruments.
+
+```typescript
+interface InstrumentAnalysis {
+  kind: 'time-profile' | 'memory' | 'network' | 'energy' | 'allocations' | 'leaks';
+  title: string;
+  summary: string;
+  metrics: InstrumentMetric[];
+  findings: InstrumentFinding[];
+  sourceSchemas: string[];
 }
 ```
 
@@ -273,7 +324,6 @@ async function checkRegression() {
       './current.trace',
       undefined,
       {
-        failOnRegression: true,
         regressionThreshold: 15, // fail if >15% slower
       }
     );
@@ -353,6 +403,7 @@ customAnalysis();
 - **macOS** with Xcode Command Line Tools installed
 - **Node.js** 18+
 - **xctrace** command-line tool (included with Xcode)
+- Time Profiler, Memory, Network, Energy, Allocations, or Leaks `.trace` files. Availability depends on which tables `xcrun xctrace export --toc` exposes for the trace.
 
 ## Error Handling
 

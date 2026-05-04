@@ -82,12 +82,55 @@ export interface Allocation {
 }
 
 /**
+ * Supported xctrace instrument families.
+ */
+export type TraceKind =
+  | 'time-profile'
+  | 'memory'
+  | 'network'
+  | 'energy'
+  | 'allocations'
+  | 'leaks';
+
+/**
+ * A normalized metric from a non-Time-Profiler instrument.
+ */
+export interface InstrumentMetric {
+  name: string;
+  value: string | number;
+  unit?: string;
+  numericValue?: number;
+}
+
+/**
+ * A finding from a non-Time-Profiler instrument analysis.
+ */
+export interface InstrumentFinding {
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
+  title: string;
+  description: string;
+}
+
+/**
+ * Normalized analysis for Memory, Network, Energy, Allocations, and Leaks traces.
+ */
+export interface InstrumentAnalysis {
+  kind: TraceKind;
+  title: string;
+  summary: string;
+  metrics: InstrumentMetric[];
+  findings: InstrumentFinding[];
+  sourceSchemas: string[];
+}
+
+/**
  * Complete parsed trace data
  */
 export interface ParsedTrace {
   metadata: TraceMetadata;
   timeProfile?: TimeProfileData;
   memoryProfile?: MemoryProfile;
+  instrumentAnalyses?: InstrumentAnalysis[];
   rawData?: any; // For future extensions
 }
 
@@ -138,6 +181,7 @@ export interface Analysis {
   bottlenecks: Bottleneck[];
   recommendations: Recommendation[];
   topFunctions: FunctionProfile[];
+  instrumentAnalyses: InstrumentAnalysis[];
   summary: string;
 }
 

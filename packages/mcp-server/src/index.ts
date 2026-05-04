@@ -1476,6 +1476,7 @@ export class XCTraceAnalyzerServer {
       lines.push('');
       this.appendCpuHighlights(lines, result.analysis);
       lines.push('');
+      this.appendHangsSection(lines, result.analysis);
       this.appendInstrumentSections(lines, result.analysis);
     }
 
@@ -1558,6 +1559,43 @@ export class XCTraceAnalyzerServer {
           `- ${bottleneck.function}: ${bottleneck.duration.toFixed(0)}ms, ${bottleneck.impact} impact`
         );
       }
+      lines.push('');
+    }
+  }
+
+  private appendHangsSection(lines: string[], analysis: Analysis): void {
+    const hangs = analysis.hangs;
+    if (!hangs || hangs.events.length === 0) {
+      return;
+    }
+
+    const total = hangs.events.length;
+    const totalSec = (hangs.totalHangMs / 1000).toFixed(2);
+    const longestSec = (hangs.longestMs / 1000).toFixed(2);
+
+    lines.push('## Hangs');
+    lines.push(
+      `${total} hang${total > 1 ? 's' : ''} detected (${hangs.severeCount} severe, ${hangs.hangCount} standard, ${hangs.microhangCount} micro). ` +
+        `Total stalled main-thread time: ${totalSec}s. Longest: ${longestSec}s.`
+    );
+    lines.push('');
+
+    const sortedByDuration = [...hangs.events]
+      .sort((a, b) => b.durationMs - a.durationMs)
+      .slice(0, 10);
+    for (const event of sortedByDuration) {
+      lines.push(
+        `- ${formatHangStartTime(event.startMs)} — ${event.hangType} — ${formatHangDuration(event.durationMs)}` +
+          (event.threadName ? ` — ${event.threadName}` : '') +
+          (event.processName && !event.threadName?.includes(event.processName)
+            ? ` (${event.processName})`
+            : '')
+      );
+    }
+    lines.push('');
+
+    if (hangs.sourceSchemas.length > 0) {
+      lines.push(`_Source: ${hangs.sourceSchemas.join(', ')}_`);
       lines.push('');
     }
   }
@@ -1698,6 +1736,8 @@ export class XCTraceAnalyzerServer {
       }
     }
 
+    this.appendHangsSection(lines, analysis);
+
     if (analysis.instrumentAnalyses.length > 0) {
       lines.push('## Additional Instrument Analysis');
       lines.push('');
@@ -1832,6 +1872,21 @@ function isMainModule(): boolean {
   return process.argv[1]
     ? fileURLToPath(import.meta.url) === resolve(process.argv[1])
     : false;
+}
+
+/** Format a trace-relative offset as `mm:ss.SSS` (matches Instruments display). */
+function formatHangStartTime(ms: number): string {
+  const totalMs = Math.max(0, Math.round(ms));
+  const minutes = Math.floor(totalMs / 60_000);
+  const seconds = Math.floor((totalMs % 60_000) / 1000);
+  const millis = totalMs % 1000;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
+}
+
+/** Format a duration in ms as a compact human string (`562 ms`, `4.76 s`). */
+function formatHangDuration(ms: number): string {
+  if (ms < 1000) return `${ms.toFixed(0)} ms`;
+  return `${(ms / 1000).toFixed(2)} s`;
 }
 
 if (isMainModule()) {

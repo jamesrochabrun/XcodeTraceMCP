@@ -82,12 +82,96 @@ export interface Allocation {
 }
 
 /**
+ * Supported xctrace instrument families.
+ */
+export type TraceKind =
+  | 'time-profile'
+  | 'memory'
+  | 'network'
+  | 'energy'
+  | 'allocations'
+  | 'leaks';
+
+/**
+ * Honest support status for data exposed by xctrace.
+ */
+export type SupportStatus = 'supported' | 'partial' | 'not_exportable' | 'unsupported';
+
+/**
+ * A table discovered in xctrace's table of contents.
+ */
+export interface TraceTableDescriptor {
+  runNumber: number;
+  schema: string;
+  xpath: string;
+  trackName?: string;
+  detailName?: string;
+}
+
+/**
+ * One export operation attempted while parsing a trace.
+ */
+export interface ExportAttempt {
+  kind: TraceKind | 'toc' | 'har' | 'symbolication';
+  status: 'success' | 'empty' | 'failed' | 'skipped';
+  schema?: string;
+  xpath?: string;
+  message?: string;
+}
+
+/**
+ * Support status for one analysis family in a parsed trace.
+ */
+export interface AnalysisSupportStatus {
+  kind: TraceKind;
+  status: SupportStatus;
+  reason: string;
+  sourceSchemas: string[];
+}
+
+/**
+ * A normalized metric from a non-Time-Profiler instrument.
+ */
+export interface InstrumentMetric {
+  name: string;
+  value: string | number;
+  unit?: string;
+  numericValue?: number;
+}
+
+/**
+ * A finding from a non-Time-Profiler instrument analysis.
+ */
+export interface InstrumentFinding {
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
+  title: string;
+  description: string;
+}
+
+/**
+ * Normalized analysis for Memory, Network, Energy, Allocations, and Leaks traces.
+ */
+export interface InstrumentAnalysis {
+  kind: TraceKind;
+  title: string;
+  summary: string;
+  metrics: InstrumentMetric[];
+  findings: InstrumentFinding[];
+  sourceSchemas: string[];
+  supportStatus?: SupportStatus;
+}
+
+/**
  * Complete parsed trace data
  */
 export interface ParsedTrace {
   metadata: TraceMetadata;
   timeProfile?: TimeProfileData;
   memoryProfile?: MemoryProfile;
+  instrumentAnalyses?: InstrumentAnalysis[];
+  tableDescriptors?: TraceTableDescriptor[];
+  exportAttempts?: ExportAttempt[];
+  supportStatus?: AnalysisSupportStatus[];
   rawData?: any; // For future extensions
 }
 
@@ -138,7 +222,34 @@ export interface Analysis {
   bottlenecks: Bottleneck[];
   recommendations: Recommendation[];
   topFunctions: FunctionProfile[];
+  instrumentAnalyses: InstrumentAnalysis[];
   summary: string;
+  supportStatus?: AnalysisSupportStatus[];
+  exportAttempts?: ExportAttempt[];
+}
+
+/**
+ * Machine-readable report shape for MCP/CI callers.
+ */
+export interface StructuredAnalysisReport {
+  analysis: Analysis;
+  supportStatus: AnalysisSupportStatus[];
+  exportAttempts: ExportAttempt[];
+}
+
+/**
+ * Current local xctrace command capabilities.
+ */
+export interface XCTraceCapabilities {
+  available: boolean;
+  version?: string;
+  templates: string[];
+  devices: string[];
+  instruments: string[];
+  exportModes: Array<'toc' | 'xpath' | 'har'>;
+  recordModes: Array<'attach' | 'launch' | 'all-processes'>;
+  supportsSymbolication: boolean;
+  warnings: string[];
 }
 
 /**

@@ -145,6 +145,7 @@ export class RecommendationEngine {
 
     // Add general recommendations based on stats
     recommendations.push(...this.generateGeneralRecommendations(analysis));
+    recommendations.push(...this.generateInstrumentRecommendations(analysis));
 
     // Remove duplicates and prioritize
     return this.deduplicateAndPrioritize(recommendations);
@@ -217,6 +218,82 @@ export class RecommendationEngine {
     }
 
     return recommendations;
+  }
+
+  /**
+   * Generate recommendations from non-Time-Profiler instrument findings.
+   */
+  private generateInstrumentRecommendations(analysis: Analysis): Recommendation[] {
+    const recommendations: Recommendation[] = [];
+
+    for (const instrument of analysis.instrumentAnalyses ?? []) {
+      for (const finding of instrument.findings) {
+        switch (instrument.kind) {
+          case 'memory':
+            recommendations.push({
+              type: 'memory',
+              priority: this.priorityFromFinding(finding.severity),
+              title: 'Investigate Memory Usage',
+              description: finding.description,
+              affectedFunctions: [],
+              potentialImprovement: 'Lower peak memory and fewer memory pressure events',
+            });
+            break;
+          case 'allocations':
+            recommendations.push({
+              type: 'memory',
+              priority: this.priorityFromFinding(finding.severity),
+              title: 'Reduce Allocation Churn',
+              description: finding.description,
+              affectedFunctions: [],
+              potentialImprovement: 'Fewer allocations and less allocator overhead',
+            });
+            break;
+          case 'leaks':
+            recommendations.push({
+              type: 'memory',
+              priority: this.priorityFromFinding(finding.severity),
+              title: 'Investigate Memory Leaks',
+              description: finding.description,
+              affectedFunctions: [],
+              potentialImprovement: 'Recovered leaked memory and improved long-session stability',
+            });
+            break;
+          case 'network':
+            recommendations.push({
+              type: 'caching',
+              priority: this.priorityFromFinding(finding.severity),
+              title: 'Review Network Reliability',
+              description: finding.description,
+              affectedFunctions: [],
+              potentialImprovement: 'Fewer failed requests and less redundant transfer',
+            });
+            break;
+          case 'energy':
+            recommendations.push({
+              type: 'optimization',
+              priority: this.priorityFromFinding(finding.severity),
+              title: 'Reduce Energy Impact',
+              description: finding.description,
+              affectedFunctions: [],
+              potentialImprovement: 'Lower battery usage and less background activity',
+            });
+            break;
+        }
+      }
+    }
+
+    return recommendations;
+  }
+
+  private priorityFromFinding(severity: 'critical' | 'high' | 'medium' | 'low' | 'info'): Recommendation['priority'] {
+    if (severity === 'critical' || severity === 'high') {
+      return 'high';
+    }
+    if (severity === 'medium') {
+      return 'medium';
+    }
+    return 'low';
   }
 
   /**

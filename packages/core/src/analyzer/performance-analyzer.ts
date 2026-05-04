@@ -51,6 +51,9 @@ export class PerformanceAnalyzer {
         bottlenecks,
         recommendations: [], // Will be filled by RecommendationEngine
         topFunctions,
+        instrumentAnalyses: trace.instrumentAnalyses ?? [],
+        supportStatus: trace.supportStatus,
+        exportAttempts: trace.exportAttempts,
         summary,
       };
     } catch (error) {
@@ -238,6 +241,7 @@ export class PerformanceAnalyzer {
    */
   private generateSummary(trace: ParsedTrace, stats: PerformanceStats, bottlenecks: Bottleneck[]): string {
     const parts: string[] = [];
+    const instrumentCount = trace.instrumentAnalyses?.length ?? 0;
 
     // Overall assessment
     if (bottlenecks.length === 0) {
@@ -262,6 +266,10 @@ export class PerformanceAnalyzer {
     if (bottlenecks.length > 0) {
       const top = bottlenecks[0];
       parts.push(`Primary bottleneck: ${top.function} (${top.duration.toFixed(0)}ms, ${top.percentage.toFixed(1)}% of time).`);
+    }
+
+    if (instrumentCount > 0) {
+      parts.push(`Found ${instrumentCount} additional instrument analyses.`);
     }
 
     return parts.join(' ');

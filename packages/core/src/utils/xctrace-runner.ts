@@ -3,7 +3,7 @@
  */
 
 import { execFile } from 'child_process';
-import { mkdtemp, readdir, readFile, rm } from 'fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { promisify } from 'util';
@@ -12,9 +12,11 @@ import { XCTraceCapabilities, XCTraceError } from '../types.js';
 const execFileAsync = promisify(execFile);
 const DEFAULT_MAX_BUFFER = 50 * 1024 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
-const EXPORT_TOC_TIMEOUT_MS = 10_000;
-const EXPORT_TABLE_TIMEOUT_MS = 5_000;
-const EXPORT_HAR_TIMEOUT_MS = 5_000;
+const EXPORT_TOC_TIMEOUT_MS = 30_000;
+// 5s was too short — real time-profile / potential-hangs exports on a 30s
+// trace routinely take 10–25s. Override per call via the third arg if needed.
+const EXPORT_TABLE_TIMEOUT_MS = 60_000;
+const EXPORT_HAR_TIMEOUT_MS = 30_000;
 const SYMBOLICATE_TIMEOUT_MS = 60_000;
 
 async function runXcrun(args: string[], timeout?: number): Promise<string> {
@@ -24,6 +26,53 @@ async function runXcrun(args: string[], timeout?: number): Promise<string> {
     killSignal: 'SIGKILL',
   });
   return stdout.trimEnd();
+}
+
+interface XcrunRawResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+}
+
+/**
+ * Variant of {@link runXcrun} that always resolves, even when xctrace exits with
+ * a non-zero status. Required by `recordTrace`: xctrace returns a non-zero exit
+ * code when `--time-limit` fires (or the user sends Ctrl-C) even though the
+ * trace file was fully written. Inspecting the trace path on disk is a more
+ * reliable success signal than the exit code.
+ */
+function runXcrunRaw(args: string[], timeout?: number): Promise<XcrunRawResult> {
+  return new Promise((resolve) => {
+    execFile(
+      'xcrun',
+      args,
+      {
+        maxBuffer: DEFAULT_MAX_BUFFER,
+        timeout: timeout ?? DEFAULT_COMMAND_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
+      },
+      (error, stdout, stderr) => {
+        const exitCode = (error as NodeJS.ErrnoException & { code?: number | string } | null)?.code;
+        const numericExit =
+          typeof exitCode === 'number'
+            ? exitCode
+            : exitCode === undefined || exitCode === null
+              ? error
+                ? null
+                : 0
+              : null;
+        const signal =
+          (error as NodeJS.ErrnoException & { signal?: NodeJS.Signals } | null)?.signal ?? null;
+        resolve({
+          stdout: (stdout ?? '').toString(),
+          stderr: (stderr ?? '').toString(),
+          exitCode: numericExit,
+          signal,
+        });
+      }
+    );
+  });
 }
 
 async function runXcrunWithOutputFile(
@@ -368,19 +417,54 @@ export function buildRecordTraceArgs(options: RecordOptions): string[] {
 
 export async function recordTrace(options: RecordOptions): Promise<void> {
   const args = buildRecordTraceArgs(options);
+  const timeout = (options.duration || 30) * 1000 + 30000;
 
+  // xctrace returns a non-zero exit code when `--time-limit` fires or when the
+  // user (or our killSignal) sends a signal — even though the trace file is
+  // fully written. Determine success from the artifact on disk instead of from
+  // the exit code so legitimate time-limited recordings aren't reported as
+  // failures.
+  const result = await runXcrunRaw(args, timeout);
+  const traceWritten = await traceArtifactExists(options.outputPath);
+
+  if (traceWritten) {
+    return;
+  }
+
+  const details = processErrorOutput({ stdout: result.stdout, stderr: result.stderr });
+  const target = options.processName ?? options.appIdentifier ?? 'all processes';
+  const exitDetail =
+    result.signal != null
+      ? ` (signal ${result.signal})`
+      : result.exitCode != null
+        ? ` (exit ${result.exitCode})`
+        : '';
+  throw new XCTraceError(
+    [
+      `Failed to record trace for ${target}${exitDetail}`,
+      details,
+    ]
+      .filter(Boolean)
+      .join(': '),
+    result.exitCode ?? undefined,
+    details
+  );
+}
+
+/**
+ * Exported for unit tests. xctrace `.trace` outputs are directories; success
+ * is determined by their presence + non-emptiness, not by xctrace's exit code.
+ */
+export async function traceArtifactExists(tracePath: string): Promise<boolean> {
   try {
-    await runXcrun(args, (options.duration || 30) * 1000 + 30000);
-  } catch (error: any) {
-    const details = processErrorOutput(error);
-    throw new XCTraceError(
-      [
-        `Failed to record trace for ${options.processName ?? options.appIdentifier ?? 'all processes'}`,
-        details,
-      ].filter(Boolean).join(': '),
-      error.code,
-      details
-    );
+    const stats = await stat(tracePath);
+    if (!stats.isDirectory()) {
+      return false;
+    }
+    const entries = await readdir(tracePath);
+    return entries.length > 0;
+  } catch {
+    return false;
   }
 }
 

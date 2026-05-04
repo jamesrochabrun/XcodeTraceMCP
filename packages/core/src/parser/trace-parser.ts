@@ -20,6 +20,9 @@ import {
   AnalysisSupportStatus,
   TraceTableDescriptor,
   SupportStatus,
+  HangsData,
+  HangEvent,
+  HangType,
 } from '../types.js';
 import { exportHAR, exportTable, exportTOC, exportXPath } from '../utils/xctrace-runner.js';
 
@@ -39,7 +42,11 @@ const defaultExporter: TraceExporter = {
 
 type TableRow = Record<string, string | number | boolean>;
 
-const INSTRUMENT_ORDER: Exclude<TraceKind, 'time-profile'>[] = [
+// Hangs and time-profile are parsed via dedicated code paths and therefore
+// excluded from the instrument-pattern routing below.
+type InstrumentKind = Exclude<TraceKind, 'time-profile' | 'hangs'>;
+
+const INSTRUMENT_ORDER: InstrumentKind[] = [
   'memory',
   'network',
   'energy',
@@ -47,13 +54,67 @@ const INSTRUMENT_ORDER: Exclude<TraceKind, 'time-profile'>[] = [
   'leaks',
 ];
 
-const SCHEMA_PATTERNS: Record<Exclude<TraceKind, 'time-profile'>, RegExp[]> = {
+const SCHEMA_PATTERNS: Record<InstrumentKind, RegExp[]> = {
   memory: [/memory/i, /resident/i, /dirty/i, /vm/i],
   network: [/network/i, /connection/i, /http/i, /url/i],
   energy: [/energy/i, /power/i, /wakeups?/i, /battery/i],
   allocations: [/alloc/i, /malloc/i],
   leaks: [/leaks?/i],
 };
+
+/** Schemas xctrace uses to expose main-thread stalls. */
+const HANG_SCHEMAS = ['potential-hangs', 'hang-risks'] as const;
+type HangSchema = (typeof HANG_SCHEMAS)[number];
+
+/**
+ * Parse xctrace timestamp/duration fmt strings to milliseconds.
+ *
+ * Supported shapes (all real outputs from xctrace 16):
+ * - `"817.10 ms"` / `"11.37 s"` / `"4.76 s"` (duration with unit)
+ * - `"00:01.326.520"` (mm:ss.ms.us — used for absolute timestamps)
+ * - `"272.78 ms"` (microhang durations)
+ *
+ * Returns `undefined` when the string can't be interpreted; callers should
+ * fall back to other fields.
+ */
+function parseTimestampFmtToMs(fmt: string): number | undefined {
+  const trimmed = fmt.trim();
+  if (!trimmed) return undefined;
+
+  // mm:ss.ms.us — convert each segment.
+  const colonMatch = trimmed.match(/^(\d+):(\d+)\.(\d+)(?:\.(\d+))?$/);
+  if (colonMatch) {
+    const minutes = Number(colonMatch[1]);
+    const seconds = Number(colonMatch[2]);
+    const ms = Number(colonMatch[3]);
+    const us = colonMatch[4] !== undefined ? Number(colonMatch[4]) : 0;
+    return minutes * 60_000 + seconds * 1000 + ms + us / 1000;
+  }
+
+  // value + unit
+  const unitMatch = trimmed.match(/^(\d+(?:\.\d+)?)\s*(ns|us|µs|ms|s|m|h)$/i);
+  if (unitMatch) {
+    const value = Number(unitMatch[1]);
+    const unit = unitMatch[2].toLowerCase();
+    switch (unit) {
+      case 'ns':
+        return value / 1e6;
+      case 'us':
+      case 'µs':
+        return value / 1000;
+      case 'ms':
+        return value;
+      case 's':
+        return value * 1000;
+      case 'm':
+        return value * 60_000;
+      case 'h':
+        return value * 3_600_000;
+    }
+  }
+
+  return undefined;
+}
 
 const NETWORK_RAW_EXPORT_DENY_PATTERNS = [
   /cfnetwork/i,
@@ -138,6 +199,7 @@ export class TraceParser {
 
       // Parse time profile data
       const timeProfile = await this.parseTimeProfile(tracePath, schemas, tableDescriptors);
+      const hangs = await this.parseHangs(tracePath, schemas, tableDescriptors);
       const instrumentAnalyses = await this.parseInstrumentAnalyses(
         tracePath,
         schemas,
@@ -148,6 +210,7 @@ export class TraceParser {
       return {
         metadata,
         timeProfile,
+        hangs,
         instrumentAnalyses,
         tableDescriptors,
         exportAttempts: [...this.exportAttempts],
@@ -387,6 +450,279 @@ export class TraceParser {
     return analyses;
   }
 
+  /**
+   * Parse main-thread hang events from `potential-hangs` and `hang-risks`.
+   *
+   * xctrace exposes these schemas in every macOS/iOS trace; each row carries a
+   * `start-time`, `duration`, and `hang-type` (`Hang` / `Severe Hang` /
+   * `Microhang`), plus thread/process metadata. Returns `undefined` when no
+   * hang schemas are present (most empty traces).
+   */
+  private async parseHangs(
+    tracePath: string,
+    schemas: string[],
+    tableDescriptors: TraceTableDescriptor[]
+  ): Promise<HangsData | undefined> {
+    const presentSchemas = HANG_SCHEMAS.filter((schema) => schemas.includes(schema));
+    if (presentSchemas.length === 0) {
+      return undefined;
+    }
+
+    const events: HangEvent[] = [];
+    const sourceSchemas: string[] = [];
+
+    for (const schema of presentSchemas) {
+      const descriptor = tableDescriptors.find((table) => table.schema === schema);
+      try {
+        const xmlData = descriptor?.xpath && this.exporter.exportXPath
+          ? await this.exporter.exportXPath(tracePath, descriptor.xpath)
+          : await this.exporter.exportTable(tracePath, schema, descriptor?.runNumber);
+
+        if (!xmlData || xmlData.trim() === '') {
+          this.exportAttempts.push({
+            kind: 'hangs',
+            status: 'empty',
+            schema,
+            xpath: descriptor?.xpath,
+          });
+          continue;
+        }
+
+        const parsed = this.xmlParser.parse(xmlData);
+        const table = parsed.table ?? parsed['trace-query-result']?.node;
+        if (!table) {
+          this.exportAttempts.push({
+            kind: 'hangs',
+            status: 'empty',
+            schema,
+            xpath: descriptor?.xpath,
+            message: `No table rows were exported for ${schema}.`,
+          });
+          continue;
+        }
+
+        const rawRows = this.rowsFromTableNode(table);
+        const resolved = this.resolveIdRefs(rawRows);
+        const schemaEvents = resolved
+          .map((row) => this.parseHangRow(row, schema))
+          .filter((event): event is HangEvent => event !== undefined);
+
+        if (schemaEvents.length > 0) {
+          events.push(...schemaEvents);
+          sourceSchemas.push(schema);
+        }
+        this.exportAttempts.push({
+          kind: 'hangs',
+          status: schemaEvents.length > 0 ? 'success' : 'empty',
+          schema,
+          xpath: descriptor?.xpath,
+        });
+      } catch (error) {
+        this.exportAttempts.push({
+          kind: 'hangs',
+          status: 'failed',
+          schema,
+          xpath: descriptor?.xpath,
+          message: (error as Error).message,
+        });
+        // Don't AND-gate across descriptors — keep going so events from a
+        // sibling schema (e.g. `potential-hangs`) still surface even if
+        // `hang-risks` failed.
+      }
+    }
+
+    if (events.length === 0) {
+      return undefined;
+    }
+
+    events.sort((a, b) => a.startMs - b.startMs);
+    return this.summarizeHangs(events, sourceSchemas);
+  }
+
+  private parseHangRow(row: any, schema: HangSchema): HangEvent | undefined {
+    const startMs = this.readDurationFieldMs(row['start-time']);
+    const durationMs = this.readDurationFieldMs(row.duration);
+    const hangType = this.readTextField(row['hang-type']) as HangType | undefined;
+    if (startMs === undefined || durationMs === undefined || !hangType) {
+      return undefined;
+    }
+
+    const thread = row.thread;
+    const threadName = this.readFmtField(thread);
+    const tidValue = this.readNumericField(thread?.tid);
+
+    const processNode = row.process ?? thread?.process;
+    const processName = this.readFmtField(processNode);
+    const pidValue = this.readNumericField(processNode?.pid);
+
+    const event: HangEvent = {
+      startMs,
+      durationMs,
+      hangType,
+      schemaSource: schema,
+    };
+    if (threadName !== undefined) event.threadName = threadName;
+    if (tidValue !== undefined) event.threadId = tidValue;
+    if (processName !== undefined) event.processName = processName;
+    if (pidValue !== undefined) event.pid = pidValue;
+    return event;
+  }
+
+  private summarizeHangs(events: HangEvent[], sourceSchemas: string[]): HangsData {
+    let totalHangMs = 0;
+    let severeCount = 0;
+    let hangCount = 0;
+    let microhangCount = 0;
+    let longestMs = 0;
+    for (const event of events) {
+      totalHangMs += event.durationMs;
+      if (event.durationMs > longestMs) longestMs = event.durationMs;
+      switch (event.hangType) {
+        case 'Severe Hang':
+          severeCount += 1;
+          break;
+        case 'Microhang':
+          microhangCount += 1;
+          break;
+        case 'Hang':
+          hangCount += 1;
+          break;
+        default:
+          // Forward-compat: unknown classifications fall through silently.
+          break;
+      }
+    }
+    return {
+      events,
+      totalHangMs,
+      severeCount,
+      hangCount,
+      microhangCount,
+      longestMs,
+      sourceSchemas,
+    };
+  }
+
+  /**
+   * xctrace XML interns repeated values: the first occurrence has `id="N"`
+   * with full data, every subsequent occurrence is `<element ref="N"/>`.
+   * Without resolution every row after the first loses its thread/process
+   * info. Walk the rows once collecting `id -> node`, then deep-clone each
+   * row substituting any `ref` for its captured node.
+   */
+  private resolveIdRefs(rows: any[]): any[] {
+    const idMap = new Map<string, any>();
+
+    const collect = (value: any): void => {
+      if (value === null || typeof value !== 'object') return;
+      if (Array.isArray(value)) {
+        for (const item of value) collect(item);
+        return;
+      }
+      const id = value['@_id'];
+      if (id !== undefined && id !== null) {
+        idMap.set(String(id), value);
+      }
+      for (const [key, child] of Object.entries(value)) {
+        if (key.startsWith('@_')) continue;
+        collect(child);
+      }
+    };
+    for (const row of rows) collect(row);
+
+    const resolve = (value: any): any => {
+      if (value === null || typeof value !== 'object') return value;
+      if (Array.isArray(value)) return value.map(resolve);
+      const refId = value['@_ref'];
+      if (refId !== undefined && refId !== null) {
+        const captured = idMap.get(String(refId));
+        if (captured !== undefined) {
+          // Resolve the captured node recursively in case it itself contains refs.
+          return resolve(captured);
+        }
+      }
+      const out: any = {};
+      for (const [key, child] of Object.entries(value)) {
+        if (key.startsWith('@_')) {
+          out[key] = child;
+        } else {
+          out[key] = resolve(child);
+        }
+      }
+      return out;
+    };
+
+    return rows.map(resolve);
+  }
+
+  /**
+   * Read the duration of a `<start-time>` / `<duration>` element, in
+   * milliseconds. xctrace emits the raw nanosecond count as the element's
+   * text content and a pretty form (e.g. `"817.10 ms"` or `"00:01.326.520"`)
+   * as `@_fmt`. Prefer the text (always ns); fall back to fmt parsing.
+   */
+  private readDurationFieldMs(field: any): number | undefined {
+    if (field === undefined || field === null) return undefined;
+    if (typeof field === 'number') return field / 1e6;
+    if (typeof field === 'string') {
+      const ns = Number(field);
+      if (Number.isFinite(ns)) return ns / 1e6;
+      return parseTimestampFmtToMs(field);
+    }
+    if (typeof field === 'object') {
+      const text = field['#text'];
+      if (typeof text === 'number') return text / 1e6;
+      if (typeof text === 'string') {
+        const ns = Number(text);
+        if (Number.isFinite(ns)) return ns / 1e6;
+      }
+      const fmt = field['@_fmt'];
+      if (typeof fmt === 'string') return parseTimestampFmtToMs(fmt);
+    }
+    return undefined;
+  }
+
+  private readTextField(field: any): string | undefined {
+    if (field === undefined || field === null) return undefined;
+    if (typeof field === 'string') return field;
+    if (typeof field === 'number') return String(field);
+    if (typeof field === 'object') {
+      const text = field['#text'];
+      if (typeof text === 'string') return text;
+      if (typeof text === 'number') return String(text);
+      const fmt = field['@_fmt'];
+      if (typeof fmt === 'string') return fmt;
+    }
+    return undefined;
+  }
+
+  private readFmtField(field: any): string | undefined {
+    if (field === undefined || field === null) return undefined;
+    if (typeof field === 'object') {
+      const fmt = field['@_fmt'];
+      if (typeof fmt === 'string' && fmt.length > 0) return fmt;
+    }
+    return undefined;
+  }
+
+  private readNumericField(field: any): number | undefined {
+    if (field === undefined || field === null) return undefined;
+    if (typeof field === 'number') return field;
+    if (typeof field === 'string') {
+      const n = Number(field);
+      return Number.isFinite(n) ? n : undefined;
+    }
+    if (typeof field === 'object') {
+      const text = field['#text'];
+      if (typeof text === 'number') return text;
+      if (typeof text === 'string') {
+        const n = Number(text);
+        if (Number.isFinite(n)) return n;
+      }
+    }
+    return undefined;
+  }
+
   private async parseNetworkAnalysis(
     tracePath: string,
     matchingSchemas: string[],
@@ -547,6 +883,8 @@ export class TraceParser {
         return 'Allocations';
       case 'leaks':
         return 'Leaks';
+      case 'hangs':
+        return 'Hangs';
     }
   }
 
@@ -873,10 +1211,7 @@ export class TraceParser {
     return [];
   }
 
-  private matchSchemasForKind(
-    schemas: string[],
-    kind: Exclude<TraceKind, 'time-profile'>
-  ): string[] {
+  private matchSchemasForKind(schemas: string[], kind: InstrumentKind): string[] {
     const patterns = SCHEMA_PATTERNS[kind];
     return schemas.filter((schema) => patterns.some((pattern) => pattern.test(schema)));
   }

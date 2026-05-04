@@ -149,6 +149,77 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).not.toContain('Slow functions (>2): 2');
   });
 
+  it('renders a Hangs section when the analysis includes hang events', async () => {
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () =>
+        analysis({
+          hangs: {
+            events: [
+              {
+                startMs: 2143.625,
+                durationMs: 11371.5,
+                hangType: 'Severe Hang',
+                threadName: 'Main Thread (AgentHub)',
+                processName: 'AgentHub (36405)',
+                schemaSource: 'potential-hangs',
+              },
+              {
+                startMs: 587.84,
+                durationMs: 562.5,
+                hangType: 'Hang',
+                threadName: 'Main Thread (AgentHub)',
+                processName: 'AgentHub (36405)',
+                schemaSource: 'potential-hangs',
+              },
+            ],
+            totalHangMs: 11934.0,
+            severeCount: 1,
+            hangCount: 1,
+            microhangCount: 0,
+            longestMs: 11371.5,
+            sourceSchemas: ['potential-hangs'],
+          },
+        }),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    const result = await server.callTool('analyze_trace', {
+      tracePath: '/tmp/app.trace',
+    });
+
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    expect(text).toContain('## Hangs');
+    expect(text).toContain('Severe Hang');
+    expect(text).toContain('11.37 s');
+    expect(text).toContain('Main Thread (AgentHub)');
+    // Sorted by duration descending — severe hang appears before standard hang.
+    const severeIdx = text.indexOf('Severe Hang');
+    const standardIdx = text.indexOf('— Hang —');
+    expect(severeIdx).toBeGreaterThan(-1);
+    expect(standardIdx).toBeGreaterThan(severeIdx);
+  });
+
+  it('omits the Hangs section when the analysis has no hang events', async () => {
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () => analysis(),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    const result = await server.callTool('analyze_trace', { tracePath: '/tmp/app.trace' });
+    expect(result.content[0].text).not.toContain('## Hangs');
+  });
+
   it('marks compare_traces as an MCP error when failOnRegression is true and regressions exist', async () => {
     const server = new XCTraceAnalyzerServer({
       analyzeTraceFile: async () => analysis(),

@@ -52,6 +52,7 @@ export class PerformanceAnalyzer {
         recommendations: [], // Will be filled by RecommendationEngine
         topFunctions,
         instrumentAnalyses: trace.instrumentAnalyses ?? [],
+        hangs: trace.hangs,
         supportStatus: trace.supportStatus,
         exportAttempts: trace.exportAttempts,
         summary,
@@ -242,6 +243,22 @@ export class PerformanceAnalyzer {
   private generateSummary(trace: ParsedTrace, stats: PerformanceStats, bottlenecks: Bottleneck[]): string {
     const parts: string[] = [];
     const instrumentCount = trace.instrumentAnalyses?.length ?? 0;
+
+    // Hangs callout — most important user-visible signal, surface it first.
+    const hangs = trace.hangs;
+    if (hangs && hangs.events.length > 0) {
+      const severe = hangs.severeCount;
+      const longestS = (hangs.longestMs / 1000).toFixed(2);
+      if (severe > 0) {
+        parts.push(
+          `⚠️ ${severe} severe hang${severe > 1 ? 's' : ''} on the main thread (longest ${longestS}s).`
+        );
+      } else {
+        parts.push(
+          `⚠️ ${hangs.events.length} hang${hangs.events.length > 1 ? 's' : ''} on the main thread (longest ${longestS}s).`
+        );
+      }
+    }
 
     // Overall assessment
     if (bottlenecks.length === 0) {

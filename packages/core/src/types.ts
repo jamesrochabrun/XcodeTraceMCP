@@ -62,6 +62,47 @@ export interface ThreadInfo {
 }
 
 /**
+ * Severity classification of a main-thread stall, as reported by xctrace's
+ * `potential-hangs` / `hang-risks` instruments. The string fallback exists so
+ * forward-compatibility is preserved if Xcode adds a new tier — callers can
+ * still display the raw label.
+ */
+export type HangType = 'Microhang' | 'Hang' | 'Severe Hang' | (string & {});
+
+/**
+ * Single hang event surfaced from a trace.
+ */
+export interface HangEvent {
+  /** Offset from trace start, in milliseconds. */
+  startMs: number;
+  /** Duration the main thread was stalled, in milliseconds. */
+  durationMs: number;
+  hangType: HangType;
+  threadId?: number;
+  threadName?: string;
+  processName?: string;
+  pid?: number;
+  /** Which schema this hang came from. */
+  schemaSource: 'potential-hangs' | 'hang-risks';
+}
+
+/**
+ * Aggregated hang information for a trace.
+ */
+export interface HangsData {
+  events: HangEvent[];
+  /** Sum of `durationMs` across all events. */
+  totalHangMs: number;
+  severeCount: number;
+  hangCount: number;
+  microhangCount: number;
+  /** Longest single hang in `events`, in milliseconds. */
+  longestMs: number;
+  /** Set of schemas that contributed events (e.g. `potential-hangs`). */
+  sourceSchemas: string[];
+}
+
+/**
  * Memory/Allocations data
  */
 export interface MemoryProfile {
@@ -90,7 +131,8 @@ export type TraceKind =
   | 'network'
   | 'energy'
   | 'allocations'
-  | 'leaks';
+  | 'leaks'
+  | 'hangs';
 
 /**
  * Honest support status for data exposed by xctrace.
@@ -168,6 +210,7 @@ export interface ParsedTrace {
   metadata: TraceMetadata;
   timeProfile?: TimeProfileData;
   memoryProfile?: MemoryProfile;
+  hangs?: HangsData;
   instrumentAnalyses?: InstrumentAnalysis[];
   tableDescriptors?: TraceTableDescriptor[];
   exportAttempts?: ExportAttempt[];
@@ -223,6 +266,7 @@ export interface Analysis {
   recommendations: Recommendation[];
   topFunctions: FunctionProfile[];
   instrumentAnalyses: InstrumentAnalysis[];
+  hangs?: HangsData;
   summary: string;
   supportStatus?: AnalysisSupportStatus[];
   exportAttempts?: ExportAttempt[];

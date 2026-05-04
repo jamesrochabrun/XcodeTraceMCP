@@ -8,19 +8,22 @@ This project is a **headless Instruments companion**, not a full replacement for
 
 ---
 
-## Quick Start
+## Installation
 
-### 1. Build
+> ⚠️ **Not yet published to npm.** For now, you need to build from source (see below).
+
+### 1. Clone and Build
 
 ```bash
+git clone https://github.com/jamesrochabrun/XcodeTraceMCP.git
+cd XcodeTraceMCP
 pnpm install --frozen-lockfile
 pnpm verify
 ```
 
 ### 2. Configure Your Claude Client
 
-#### Option A: Claude Desktop
-
+**Claude Desktop**
 Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
@@ -34,12 +37,8 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 }
 ```
 
-Restart Claude Desktop.
-
-#### Option B: Claude Code (Web)
-
-1. Open this project in Claude Code
-2. Create `.claude/mcp_settings.json` in the project root:
+**Claude Code (Web)**
+Create `.claude/mcp_settings.json` in your project:
 
 ```json
 {
@@ -52,12 +51,7 @@ Restart Claude Desktop.
 }
 ```
 
-3. Reload the window
-
-The MCP server will now be available in Claude Code for this project.
-
-#### Option C: Claude Code CLI
-
+**Claude Code CLI**
 Add to `~/.config/claude/config.json`:
 
 ```json
@@ -71,9 +65,11 @@ Add to `~/.config/claude/config.json`:
 }
 ```
 
-Restart your terminal session.
+### 3. Restart your Claude client
 
-### 3. Use with Claude
+---
+
+## Usage
 
 ```
 You: Analyze my app's performance trace at ~/traces/myapp.trace
@@ -335,6 +331,8 @@ The NetworkClient regression is concerning. Should I investigate?
 
 ## Contributing
 
+Contributions welcome.
+
 Before sending changes, run:
 
 ```bash
@@ -355,10 +353,14 @@ pnpm inspect:trace test-traces/memory.trace test-traces/network.trace
 
 To contribute production support:
 
-1. Add or update real exported XML/HAR fixtures, not committed raw `.trace` files
-2. Update the support matrix and docs for any newly supported template/schema
-3. Improve recommendation patterns only when backed by parsed evidence
-4. Add unit tests plus optional local integration validation
+1. Fork, clone, and branch from `main`
+2. Add or update real exported XML/HAR fixtures, not committed raw `.trace` files
+3. Update the support matrix and docs for any newly supported template/schema
+4. Improve recommendation patterns only when backed by parsed evidence
+5. Add unit tests plus optional local integration validation
+6. Submit a PR
+
+Publishing to npm remains future work.
 
 ---
 

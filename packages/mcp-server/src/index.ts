@@ -17,6 +17,7 @@ import {
   ListToolsRequestSchema,
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
+import type { JsonSchemaValidator, jsonSchemaValidator } from '@modelcontextprotocol/sdk/validation';
 
 import {
   analyzeTraceFile as defaultAnalyzeTraceFile,
@@ -58,6 +59,16 @@ const defaultDependencies: XCTraceAnalyzerDependencies = {
   getXCTraceCapabilities: defaultGetXCTraceCapabilities,
   recordTrace: defaultRecordTrace,
   symbolicateTrace: defaultSymbolicateTrace,
+};
+
+const passthroughJsonSchemaValidator: jsonSchemaValidator = {
+  getValidator<T>(): JsonSchemaValidator<T> {
+    return (input: unknown) => ({
+      valid: true,
+      data: input as T,
+      errorMessage: undefined,
+    });
+  },
 };
 
 interface ProfilePreset {
@@ -104,6 +115,9 @@ export class XCTraceAnalyzerServer {
         capabilities: {
           tools: {},
         },
+        // This server does not issue elicitation requests, so avoid the SDK's
+        // default AJV startup path.
+        jsonSchemaValidator: passthroughJsonSchemaValidator,
       }
     );
 

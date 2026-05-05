@@ -1332,6 +1332,7 @@ export class XCTraceAnalyzerServer {
       'Default recording duration is 60s. Use 20-30s only for explicit startup/cold-launch checks; otherwise record long enough to reproduce the hang.',
       'Use outputFormat: "both" while validating a profiling workflow so the report includes Markdown plus structured supportStatus/exportAttempts.',
       'For already-running macOS apps, attach by PID is the most reliable path when multiple app instances are running.',
+      'A clean idle attach trace does not rule out startup or interaction hangs; reproduce the problematic workflow during the recording window.',
       'If Time Profiler, Hangs, or another family reports not_exportable, inspect Export Diagnostics before drawing performance conclusions.',
     ];
 
@@ -1341,6 +1342,9 @@ export class XCTraceAnalyzerServer {
       );
       notes.push(
         'Launch-mode traces can be saved but still fail xctrace export --toc with Document Missing Template Error; treat that as an exportability failure and retry with attach-by-PID.'
+      );
+      notes.push(
+        'If startup hangs remain suspected after launch export failure, inspect macOS Performance Diagnostics logs around the launch window for hang-risk warnings.'
       );
     } else if (target.mode === 'attach' && !/^\d+$/.test(target.label)) {
       notes.push(
@@ -1683,6 +1687,18 @@ export class XCTraceAnalyzerServer {
   private appendHangsSection(lines: string[], analysis: Analysis): void {
     const hangs = analysis.hangs;
     if (!hangs || hangs.events.length === 0) {
+      if (!this.hasHangExportSignal(analysis)) {
+        return;
+      }
+      lines.push('## Hangs');
+      lines.push('No exported hang events were found in this trace window.');
+      lines.push('This does not rule out startup or interaction hangs outside the captured window.');
+      const sources = this.hangSourceSchemas(analysis);
+      if (sources.length > 0) {
+        lines.push('');
+        lines.push(`_Source: ${sources.join(', ')}_`);
+      }
+      lines.push('');
       return;
     }
 
@@ -1715,6 +1731,23 @@ export class XCTraceAnalyzerServer {
       lines.push(`_Source: ${hangs.sourceSchemas.join(', ')}_`);
       lines.push('');
     }
+  }
+
+  private hasHangExportSignal(analysis: Analysis): boolean {
+    return !!analysis.hangs || (analysis.exportAttempts?.some((attempt) => attempt.kind === 'hangs') ?? false);
+  }
+
+  private hangSourceSchemas(analysis: Analysis): string[] {
+    const schemas = new Set<string>();
+    for (const schema of analysis.hangs?.sourceSchemas ?? []) {
+      schemas.add(schema);
+    }
+    for (const attempt of analysis.exportAttempts ?? []) {
+      if (attempt.kind === 'hangs' && attempt.schema) {
+        schemas.add(attempt.schema);
+      }
+    }
+    return Array.from(schemas);
   }
 
   private appendInstrumentSections(lines: string[], analysis: Analysis): void {
@@ -1799,6 +1832,7 @@ export class XCTraceAnalyzerServer {
       'Do not retry the same launch target with more launch templates unless startup-only exportability is being tested; the trace container is failing before table parsing.',
       'For an already-running app, retry with profile_running_app using the exact PID in processName.',
       'If the environment cannot list processes, ask the user for the PID or have them close duplicate app instances before attaching.',
+      'For startup hangs on macOS, inspect Performance Diagnostics logs around the launch window for hang-risk warnings, for example: log show --last 30m --style compact --predicate \'process == "AppName" && eventMessage CONTAINS[c] "hang"\'.',
       'Use outputFormat: "both" so supportStatus and exportAttempts remain visible.',
     ];
   }

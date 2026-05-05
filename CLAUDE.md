@@ -37,6 +37,7 @@ Recommended workflow:
 3. Use `outputFormat: "both"` while validating a workflow so the response includes Markdown plus structured `supportStatus` and `exportAttempts`.
 4. Use launch mode only when startup behavior is the target. If the trace is saved but `xctrace export --toc` fails with `Document Missing Template Error`, treat the run as not exportable and retry with attach-by-PID.
 5. For hangs, record for long enough to reproduce the issue, then inspect `## Hangs`, Support Matrix, and Export Diagnostics before drawing conclusions from "no issues" summaries.
+6. If `## Hangs` reports no exported events, interpret that as trace-window scoped. It does not rule out startup or interaction hangs outside the captured window.
 
 ### `profile_running_app`
 

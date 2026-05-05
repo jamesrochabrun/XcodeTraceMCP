@@ -76,6 +76,8 @@ Profile this app for hangs and CPU bottlenecks.
 
 For already-running macOS apps, attach by PID is usually the most reliable path, especially when multiple processes share the same name. Use launch mode when startup behavior is the target, but treat `Document Missing Template Error` from `xctrace export --toc` as a saved-but-not-exportable trace rather than a valid "no issues" result.
 
+Hang results are scoped to the captured trace window. If the report says no exported hang events were found, that does not rule out startup or interaction hangs that happened outside the recording.
+
 ### `profile_running_app`
 
 Record a running app once with a profiling preset and return one combined report. `durationSeconds: 60` means one 60-second recording. The preset uses a base template plus additional Instruments where Xcode supports it.

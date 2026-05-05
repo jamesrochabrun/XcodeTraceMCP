@@ -170,6 +170,8 @@ Profile this app for hangs and CPU bottlenecks.
 
 For reliable validation, prefer attach-by-PID for already-running macOS apps. Launch mode is useful for startup-specific issues, but some Xcode/macOS combinations can save a `.trace` that later fails `xctrace export --toc` with `Document Missing Template Error`; treat that as a malformed or partial trace, not as a clean "no issues" result.
 
+Hang results are scoped to the captured trace window. If the report says no exported hang events were found, that does not rule out startup or interaction hangs that happened outside the recording.
+
 It can suggest:
 - `profile_running_app` with `full`, `cpu`, `memory`, `network`, or `full-ios`
 - `track_running_app` when a specific template is more appropriate

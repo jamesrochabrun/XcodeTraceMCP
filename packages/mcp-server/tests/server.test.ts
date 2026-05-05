@@ -261,6 +261,34 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).not.toContain('## Hangs');
   });
 
+  it('renders trace-window scoped no-hangs guidance when hang tables export empty', async () => {
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () =>
+        analysis({
+          exportAttempts: [
+            {
+              kind: 'hangs',
+              status: 'empty',
+              schema: 'potential-hangs',
+            },
+          ],
+        }),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    const result = await server.callTool('analyze_trace', { tracePath: '/tmp/app.trace' });
+    const text = result.content[0].text;
+    expect(text).toContain('## Hangs');
+    expect(text).toContain('No exported hang events were found in this trace window.');
+    expect(text).toContain('does not rule out startup or interaction hangs');
+    expect(text).toContain('_Source: potential-hangs_');
+  });
+
   it('marks compare_traces as an MCP error when failOnRegression is true and regressions exist', async () => {
     const server = new XCTraceAnalyzerServer({
       analyzeTraceFile: async () => analysis(),
@@ -347,6 +375,7 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).toContain('## Next Steps');
     expect(result.content[0].text).toContain('do not interpret missing Hangs');
     expect(result.content[0].text).toContain('retry with profile_running_app using the exact PID');
+    expect(result.content[0].text).toContain('Performance Diagnostics logs');
   });
 
   it('renders additional instrument analysis sections in analyze_trace output', async () => {
@@ -446,6 +475,7 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).toContain('## Export Diagnostics');
     expect(result.content[0].text).toContain('## Next Steps');
     expect(result.content[0].text).toContain('Do not retry the same launch target');
+    expect(result.content[0].text).toContain('Performance Diagnostics logs');
   });
 
   it('returns structured JSON when requested', async () => {

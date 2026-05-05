@@ -520,6 +520,8 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).toContain('- Target: attach: MyApp');
     expect(result.content[0].text).toContain('- Template: Leaks');
     expect(result.content[0].text).toContain('- Trace: /tmp/MyApp-leaks.trace');
+    expect(result.content[0].text).toContain('## Workflow Warnings');
+    expect(result.content[0].text).toContain('not a PID');
     expect(result.content[0].text).toContain('### Leaks Analysis');
     expect(result.content[0].text).toContain('Leaks detected');
   });
@@ -636,6 +638,8 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain('# Profiling Report');
     expect(result.content[0].text).toContain('- Target: attach: MyApp');
+    expect(result.content[0].text).toContain('- Workflow validation: warnings');
+    expect(result.content[0].text).toContain('rerun with the exact PID in processName');
     expect(result.content[0].text).toContain('- Preset: full');
     expect(result.content[0].text).toContain('- Duration: 10s');
     expect(result.content[0].text).toContain('- Recording strategy: combined');

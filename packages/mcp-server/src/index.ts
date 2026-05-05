@@ -660,6 +660,7 @@ export class XCTraceAnalyzerServer {
       duration,
       device: recordOptions.device,
       outputPath,
+      workflowWarnings: target.workflowWarnings,
     });
 
     if (args?.analyze === false) {
@@ -670,7 +671,16 @@ export class XCTraceAnalyzerServer {
             type: 'text',
             text: this.formatToolOutput(
               lines.join('\n'),
-              { recording: { target, template, duration, outputPath }, analysis: null },
+              {
+                recording: {
+                  target: target.reportLabel,
+                  template,
+                  duration,
+                  outputPath,
+                  workflowWarnings: target.workflowWarnings,
+                },
+                analysis: null,
+              },
               outputFormat
             ),
           },
@@ -695,7 +705,13 @@ export class XCTraceAnalyzerServer {
           text: this.formatToolOutput(
             markdown,
             {
-              recording: { target: target.reportLabel, template, duration, outputPath },
+              recording: {
+                target: target.reportLabel,
+                template,
+                duration,
+                outputPath,
+                workflowWarnings: target.workflowWarnings,
+              },
               ...this.structuredAnalysis(analysis),
             },
             outputFormat
@@ -771,6 +787,7 @@ export class XCTraceAnalyzerServer {
       results,
       analyze,
       capabilityWarnings,
+      workflowWarnings: target.workflowWarnings,
     });
     const text = this.formatToolOutput(
       output,
@@ -783,6 +800,7 @@ export class XCTraceAnalyzerServer {
           duration,
           device,
           capabilityWarnings,
+          workflowWarnings: target.workflowWarnings,
         },
         results: results.map((result) => ({
           template: result.template,
@@ -964,6 +982,7 @@ export class XCTraceAnalyzerServer {
   private recordTargetOptions(args: any): {
     fileLabel: string;
     reportLabel: string;
+    workflowWarnings: string[];
     recordOptions: Pick<
       RecordOptions,
       | 'processName'
@@ -988,6 +1007,7 @@ export class XCTraceAnalyzerServer {
       return {
         fileLabel: 'all-processes',
         reportLabel: 'all processes',
+        workflowWarnings: [],
         recordOptions: { allProcesses: true },
       };
     }
@@ -997,6 +1017,7 @@ export class XCTraceAnalyzerServer {
       return {
         fileLabel: command,
         reportLabel: `launch: ${command}`,
+        workflowWarnings: [],
         recordOptions: {
           launchCommand: command,
           launchArguments: this.optionalStringArray(args?.launchArguments, 'launchArguments'),
@@ -1008,9 +1029,15 @@ export class XCTraceAnalyzerServer {
     }
 
     const processName = this.requiredString(args?.processName, 'processName');
+    const workflowWarnings = /^\d+$/.test(processName)
+      ? []
+      : [
+          `Attach target "${processName}" is a process name, not a PID. If multiple processes share this name, xctrace may fail as ambiguous; use profile_advisor first or rerun with the exact PID in processName.`,
+        ];
     return {
       fileLabel: processName,
       reportLabel: `attach: ${processName}`,
+      workflowWarnings,
       recordOptions: { processName },
     };
   }
@@ -1429,6 +1456,7 @@ export class XCTraceAnalyzerServer {
     duration: number;
     device?: string;
     outputPath: string;
+    workflowWarnings: string[];
   }): string[] {
     const lines = [
       '# Running App Trace Report',
@@ -1444,6 +1472,11 @@ export class XCTraceAnalyzerServer {
 
     lines.push(`- Trace: ${recording.outputPath}`);
     lines.push('');
+    if (recording.workflowWarnings.length > 0) {
+      lines.push('## Workflow Warnings');
+      lines.push(...recording.workflowWarnings.map((warning) => `- ${warning}`));
+      lines.push('');
+    }
     return lines;
   }
 
@@ -1457,6 +1490,7 @@ export class XCTraceAnalyzerServer {
     results: ProfileTraceResult[];
     analyze: boolean;
     capabilityWarnings: string[];
+    workflowWarnings: string[];
   }): string {
     const lines: string[] = [];
     const failedResults = profile.results.filter((result) => result.error);
@@ -1478,6 +1512,9 @@ export class XCTraceAnalyzerServer {
     if (profile.capabilityWarnings.length > 0) {
       lines.push('- Capability validation: warnings');
     }
+    if (profile.workflowWarnings.length > 0) {
+      lines.push('- Workflow validation: warnings');
+    }
     lines.push('');
 
     lines.push('## Summary');
@@ -1492,6 +1529,11 @@ export class XCTraceAnalyzerServer {
     if (profile.capabilityWarnings.length > 0) {
       lines.push('## Capability Warnings');
       lines.push(...profile.capabilityWarnings.map((warning) => `- ${warning}`));
+      lines.push('');
+    }
+    if (profile.workflowWarnings.length > 0) {
+      lines.push('## Workflow Warnings');
+      lines.push(...profile.workflowWarnings.map((warning) => `- ${warning}`));
       lines.push('');
     }
 

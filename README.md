@@ -162,10 +162,10 @@ MCP server exposing the core library to AI assistants.
 
 Use this first when the request is vague, such as "profile my app" or "what can we inspect?" It infers the likely intent, checks local `xctrace` capabilities, and returns a recommended tool call plus alternatives.
 
-Recommended first prompt from an app repo:
+A user should be able to start from an app repo with a simple prompt:
 
 ```text
-Use xctrace-analyzer profile_advisor first. I want to profile this app for hangs and CPU bottlenecks. Prefer attach-by-PID if the app is already running. Use outputFormat both. If launch-mode traces fail TOC export, report that as an exportability failure and retry with attach mode.
+Profile this app for hangs and CPU bottlenecks.
 ```
 
 For reliable validation, prefer attach-by-PID for already-running macOS apps. Launch mode is useful for startup-specific issues, but some Xcode/macOS combinations can save a `.trace` that later fails `xctrace export --toc` with `Document Missing Template Error`; treat that as a malformed or partial trace, not as a clean "no issues" result.

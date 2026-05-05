@@ -24,10 +24,10 @@ High-level flow:
 
 Use this first when the user says something vague like "profile my app", "let's profile", or "what can we inspect?" It suggests the best workflow and returns exact next tool-call arguments for `profile_running_app`, `track_running_app`, `analyze_trace`, or `compare_traces`.
 
-When driving the MCP from another app repository, prefer this prompt first:
+When driving the MCP from another app repository, a user should be able to start with a simple prompt:
 
 ```text
-Use xctrace-analyzer profile_advisor first. I want to profile this app for hangs and CPU bottlenecks. Prefer attach-by-PID if the app is already running. Use outputFormat both. If launch-mode traces fail TOC export, report that as an exportability failure and retry with attach mode.
+Profile this app for hangs and CPU bottlenecks.
 ```
 
 Recommended workflow:

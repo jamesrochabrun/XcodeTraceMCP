@@ -104,6 +104,45 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).toContain('Use `profile_running_app`: Full performance report.');
     expect(result.content[0].text).toContain('"processName": "MyApp"');
     expect(result.content[0].text).toContain('"preset": "full"');
+    expect(result.content[0].text).toContain('## Workflow Notes');
+    expect(result.content[0].text).toContain('rerun with the exact PID as processName');
+  });
+
+  it('warns launch profiling users about saved but non-exportable traces', async () => {
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () => analysis(),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => ['Time Profiler'],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+      getXCTraceCapabilities: async () => ({
+        available: true,
+        version: 'xctrace version 16.0 (17E192)',
+        templates: ['Time Profiler'],
+        devices: ['MacBook Pro'],
+        instruments: [],
+        exportModes: ['toc', 'xpath', 'har'],
+        recordModes: ['attach', 'launch', 'all-processes'],
+        supportsSymbolication: true,
+        warnings: [],
+      }),
+    });
+
+    const result = await server.callTool('profile_advisor', {
+      request: 'profile launch performance',
+      launchCommand: '/tmp/MyApp.app',
+      outputFormat: 'json',
+    });
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(payload.target.mode).toBe('launch');
+    expect(payload.workflowNotes).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('Document Missing Template Error'),
+      ])
+    );
   });
 
   it('suggests analyze_trace when an existing trace path is provided', async () => {
@@ -481,6 +520,8 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).toContain('- Target: attach: MyApp');
     expect(result.content[0].text).toContain('- Template: Leaks');
     expect(result.content[0].text).toContain('- Trace: /tmp/MyApp-leaks.trace');
+    expect(result.content[0].text).toContain('## Workflow Warnings');
+    expect(result.content[0].text).toContain('not a PID');
     expect(result.content[0].text).toContain('### Leaks Analysis');
     expect(result.content[0].text).toContain('Leaks detected');
   });
@@ -597,6 +638,8 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain('# Profiling Report');
     expect(result.content[0].text).toContain('- Target: attach: MyApp');
+    expect(result.content[0].text).toContain('- Workflow validation: warnings');
+    expect(result.content[0].text).toContain('rerun with the exact PID in processName');
     expect(result.content[0].text).toContain('- Preset: full');
     expect(result.content[0].text).toContain('- Duration: 10s');
     expect(result.content[0].text).toContain('- Recording strategy: combined');

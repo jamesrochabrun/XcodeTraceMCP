@@ -411,7 +411,6 @@ export class TraceParser {
         schema: 'time-profile',
         message: (error as Error).message,
       });
-      console.warn('Failed to parse time profile data:', error);
       return undefined;
     }
   }
@@ -808,6 +807,21 @@ export class TraceParser {
     timeProfile: TimeProfileData | undefined,
     instrumentAnalyses: InstrumentAnalysis[]
   ): AnalysisSupportStatus[] {
+    const tocFailure = this.exportAttempts.find((attempt) =>
+      attempt.kind === 'toc' && attempt.status === 'failed'
+    );
+    if (tocFailure) {
+      const reason = tocFailure.message
+        ? `xctrace could not export the trace TOC: ${tocFailure.message}`
+        : 'xctrace could not export the trace TOC; analysis data is unavailable.';
+      return (['time-profile', ...INSTRUMENT_ORDER] as TraceKind[]).map((kind) => ({
+        kind,
+        status: 'not_exportable',
+        reason,
+        sourceSchemas: [],
+      }));
+    }
+
     const statuses: AnalysisSupportStatus[] = [];
     const analyses = new Map(instrumentAnalyses.map((analysis) => [analysis.kind, analysis]));
     const hasTimeProfileSchema = schemas.includes('time-profile');

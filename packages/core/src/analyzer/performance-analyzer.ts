@@ -243,6 +243,19 @@ export class PerformanceAnalyzer {
   private generateSummary(trace: ParsedTrace, stats: PerformanceStats, bottlenecks: Bottleneck[]): string {
     const parts: string[] = [];
     const instrumentCount = trace.instrumentAnalyses?.length ?? 0;
+    const tocFailure = trace.exportAttempts?.find((attempt) =>
+      attempt.kind === 'toc' && attempt.status === 'failed'
+    );
+
+    if (tocFailure) {
+      parts.push(
+        tocFailure.message
+          ? `Trace analysis is incomplete because xctrace could not export the trace TOC: ${tocFailure.message}`
+          : 'Trace analysis is incomplete because xctrace could not export the trace TOC.'
+      );
+      parts.push('The trace may be malformed or partial; see Export Diagnostics for details.');
+      return parts.join(' ');
+    }
 
     // Hangs callout — most important user-visible signal, surface it first.
     const hangs = trace.hangs;

@@ -66,6 +66,28 @@ describe('PerformanceAnalyzer', () => {
       })
     );
   });
+
+  it('reports incomplete analysis when the trace TOC export failed', () => {
+    const analysis = new PerformanceAnalyzer().analyze({
+      metadata: {
+        fileName: 'broken.trace',
+        filePath: '/tmp/broken.trace',
+        duration: 0,
+        template: 'Unknown',
+      },
+      exportAttempts: [
+        {
+          kind: 'toc',
+          status: 'failed',
+          message: 'Document Missing Template Error',
+        },
+      ],
+    });
+
+    expect(analysis.summary).toContain('Trace analysis is incomplete');
+    expect(analysis.summary).toContain('Document Missing Template Error');
+    expect(analysis.summary).not.toContain('No significant performance bottlenecks detected');
+  });
 });
 
 describe('ComparativeAnalyzer', () => {

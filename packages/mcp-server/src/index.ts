@@ -153,11 +153,11 @@ export class XCTraceAnalyzerServer {
             },
             processName: {
               type: 'string',
-              description: 'Running process name or pid, if known',
+              description: 'Running process name or pid, if known. Prefer a pid when multiple app instances may be running.',
             },
             launchCommand: {
               type: 'string',
-              description: 'Command, app path, or bundle identifier to launch, if known',
+              description: 'Command, app path, or bundle identifier to launch, if startup behavior is the target',
             },
             tracePath: {
               type: 'string',
@@ -267,7 +267,7 @@ export class XCTraceAnalyzerServer {
           properties: {
             processName: {
               type: 'string',
-              description: 'Running process name or pid to attach to, for example MyApp',
+              description: 'Running process name or pid to attach to, for example MyApp. Use a pid when the name is ambiguous.',
             },
             target: {
               type: 'string',
@@ -349,7 +349,7 @@ export class XCTraceAnalyzerServer {
           properties: {
             processName: {
               type: 'string',
-              description: 'Running process name or pid to attach to, for example MyApp',
+              description: 'Running process name or pid to attach to, for example MyApp. Use a pid when the name is ambiguous.',
             },
             target: {
               type: 'string',
@@ -518,6 +518,7 @@ export class XCTraceAnalyzerServer {
       platform,
       target,
     });
+    const workflowNotes = this.advisorWorkflowNotes(target);
 
     const structured = {
       request,
@@ -526,6 +527,7 @@ export class XCTraceAnalyzerServer {
       capabilities,
       recommended: recommendations[0],
       options: recommendations,
+      workflowNotes,
     };
 
     return {
@@ -658,6 +660,7 @@ export class XCTraceAnalyzerServer {
       duration,
       device: recordOptions.device,
       outputPath,
+      workflowWarnings: target.workflowWarnings,
     });
 
     if (args?.analyze === false) {
@@ -668,7 +671,16 @@ export class XCTraceAnalyzerServer {
             type: 'text',
             text: this.formatToolOutput(
               lines.join('\n'),
-              { recording: { target, template, duration, outputPath }, analysis: null },
+              {
+                recording: {
+                  target: target.reportLabel,
+                  template,
+                  duration,
+                  outputPath,
+                  workflowWarnings: target.workflowWarnings,
+                },
+                analysis: null,
+              },
               outputFormat
             ),
           },
@@ -693,7 +705,13 @@ export class XCTraceAnalyzerServer {
           text: this.formatToolOutput(
             markdown,
             {
-              recording: { target: target.reportLabel, template, duration, outputPath },
+              recording: {
+                target: target.reportLabel,
+                template,
+                duration,
+                outputPath,
+                workflowWarnings: target.workflowWarnings,
+              },
               ...this.structuredAnalysis(analysis),
             },
             outputFormat
@@ -769,6 +787,7 @@ export class XCTraceAnalyzerServer {
       results,
       analyze,
       capabilityWarnings,
+      workflowWarnings: target.workflowWarnings,
     });
     const text = this.formatToolOutput(
       output,
@@ -781,6 +800,7 @@ export class XCTraceAnalyzerServer {
           duration,
           device,
           capabilityWarnings,
+          workflowWarnings: target.workflowWarnings,
         },
         results: results.map((result) => ({
           template: result.template,
@@ -962,6 +982,7 @@ export class XCTraceAnalyzerServer {
   private recordTargetOptions(args: any): {
     fileLabel: string;
     reportLabel: string;
+    workflowWarnings: string[];
     recordOptions: Pick<
       RecordOptions,
       | 'processName'
@@ -986,6 +1007,7 @@ export class XCTraceAnalyzerServer {
       return {
         fileLabel: 'all-processes',
         reportLabel: 'all processes',
+        workflowWarnings: [],
         recordOptions: { allProcesses: true },
       };
     }
@@ -995,6 +1017,7 @@ export class XCTraceAnalyzerServer {
       return {
         fileLabel: command,
         reportLabel: `launch: ${command}`,
+        workflowWarnings: [],
         recordOptions: {
           launchCommand: command,
           launchArguments: this.optionalStringArray(args?.launchArguments, 'launchArguments'),
@@ -1006,9 +1029,15 @@ export class XCTraceAnalyzerServer {
     }
 
     const processName = this.requiredString(args?.processName, 'processName');
+    const workflowWarnings = /^\d+$/.test(processName)
+      ? []
+      : [
+          `Attach target "${processName}" is a process name, not a PID. If multiple processes share this name, xctrace may fail as ambiguous; use profile_advisor first or rerun with the exact PID in processName.`,
+        ];
     return {
       fileLabel: processName,
       reportLabel: `attach: ${processName}`,
+      workflowWarnings,
       recordOptions: { processName },
     };
   }
@@ -1279,6 +1308,33 @@ export class XCTraceAnalyzerServer {
     });
   }
 
+  private advisorWorkflowNotes(target: {
+    mode: 'attach' | 'launch' | 'all-processes' | 'unknown' | string;
+    label: string;
+  }): string[] {
+    const notes = [
+      'Use outputFormat: "both" while validating a profiling workflow so the report includes Markdown plus structured supportStatus/exportAttempts.',
+      'For already-running macOS apps, attach by PID is the most reliable path when multiple app instances are running.',
+      'If Time Profiler, Hangs, or another family reports not_exportable, inspect Export Diagnostics before drawing performance conclusions.',
+    ];
+
+    if (target.mode === 'launch') {
+      notes.push(
+        'Launch-mode traces can be saved but still fail xctrace export --toc with Document Missing Template Error; treat that as an exportability failure and retry with attach-by-PID.'
+      );
+    } else if (target.mode === 'attach' && !/^\d+$/.test(target.label)) {
+      notes.push(
+        'If xctrace reports the process name is ambiguous, rerun with the exact PID as processName.'
+      );
+    } else if (target.mode === 'unknown') {
+      notes.push(
+        'If the app is already running, find its PID and pass it as processName; use launchCommand only when startup behavior is the target.'
+      );
+    }
+
+    return notes;
+  }
+
   private formatProfileAdvisorOutput(advice: {
     request: string;
     inferredIntent: string;
@@ -1296,6 +1352,7 @@ export class XCTraceAnalyzerServer {
       tool: string;
       arguments: Record<string, unknown>;
     }>;
+    workflowNotes: string[];
   }): string {
     const lines: string[] = [];
 
@@ -1322,6 +1379,12 @@ export class XCTraceAnalyzerServer {
     lines.push('## Other Useful Options');
     for (const option of advice.options.slice(1, 6)) {
       lines.push(`- ${option.label}: \`${option.tool}\` - ${option.when}`);
+    }
+
+    if (advice.workflowNotes.length > 0) {
+      lines.push('');
+      lines.push('## Workflow Notes');
+      lines.push(...advice.workflowNotes.map((note) => `- ${note}`));
     }
 
     const warnings = advice.capabilities.warnings;
@@ -1393,6 +1456,7 @@ export class XCTraceAnalyzerServer {
     duration: number;
     device?: string;
     outputPath: string;
+    workflowWarnings: string[];
   }): string[] {
     const lines = [
       '# Running App Trace Report',
@@ -1408,6 +1472,11 @@ export class XCTraceAnalyzerServer {
 
     lines.push(`- Trace: ${recording.outputPath}`);
     lines.push('');
+    if (recording.workflowWarnings.length > 0) {
+      lines.push('## Workflow Warnings');
+      lines.push(...recording.workflowWarnings.map((warning) => `- ${warning}`));
+      lines.push('');
+    }
     return lines;
   }
 
@@ -1421,6 +1490,7 @@ export class XCTraceAnalyzerServer {
     results: ProfileTraceResult[];
     analyze: boolean;
     capabilityWarnings: string[];
+    workflowWarnings: string[];
   }): string {
     const lines: string[] = [];
     const failedResults = profile.results.filter((result) => result.error);
@@ -1442,6 +1512,9 @@ export class XCTraceAnalyzerServer {
     if (profile.capabilityWarnings.length > 0) {
       lines.push('- Capability validation: warnings');
     }
+    if (profile.workflowWarnings.length > 0) {
+      lines.push('- Workflow validation: warnings');
+    }
     lines.push('');
 
     lines.push('## Summary');
@@ -1456,6 +1529,11 @@ export class XCTraceAnalyzerServer {
     if (profile.capabilityWarnings.length > 0) {
       lines.push('## Capability Warnings');
       lines.push(...profile.capabilityWarnings.map((warning) => `- ${warning}`));
+      lines.push('');
+    }
+    if (profile.workflowWarnings.length > 0) {
+      lines.push('## Workflow Warnings');
+      lines.push(...profile.workflowWarnings.map((warning) => `- ${warning}`));
       lines.push('');
     }
 

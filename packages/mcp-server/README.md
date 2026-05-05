@@ -68,10 +68,10 @@ Suggest the best profiling workflow before recording or analyzing anything. This
 
 The response includes a recommended next tool call and alternatives for full, CPU, memory/leaks, network, existing trace analysis, and regression comparison.
 
-Recommended first prompt from an app repo:
+A user should be able to start from an app repo with a simple prompt:
 
 ```text
-Use xctrace-analyzer profile_advisor first. I want to profile this app for hangs and CPU bottlenecks. Prefer attach-by-PID if the app is already running. Use outputFormat both. If launch-mode traces fail TOC export, report that as an exportability failure and retry with attach mode.
+Profile this app for hangs and CPU bottlenecks.
 ```
 
 For already-running macOS apps, attach by PID is usually the most reliable path, especially when multiple processes share the same name. Use launch mode when startup behavior is the target, but treat `Document Missing Template Error` from `xctrace export --toc` as a saved-but-not-exportable trace rather than a valid "no issues" result.

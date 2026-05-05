@@ -261,7 +261,7 @@ export class XCTraceAnalyzerServer {
       },
       {
         name: 'track_running_app',
-        description: 'Record a running app with xctrace, save the .trace file, and optionally analyze it',
+        description: 'Record one explicit Instruments template. Use this when the user names a template such as Leaks or Allocations; for broad hangs/CPU profiling prefer profile_advisor or profile_running_app.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -276,7 +276,7 @@ export class XCTraceAnalyzerServer {
             },
             launchCommand: {
               type: 'string',
-              description: 'Command, app path, or bundle identifier to launch when target is launch',
+              description: 'Command, app path, or bundle identifier to launch when startup/cold-launch behavior is the target. Prefer processName with a PID for already-running apps.',
             },
             launchArguments: {
               type: 'array',
@@ -343,7 +343,7 @@ export class XCTraceAnalyzerServer {
       },
       {
         name: 'profile_running_app',
-        description: 'Record a running app once with a profiling preset, save the generated trace, and return one combined report',
+        description: 'Record an app once with a profiling preset and return one combined report. Prefer attach-by-PID for already-running apps; use launch mode only for startup/cold-launch profiling.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -358,7 +358,7 @@ export class XCTraceAnalyzerServer {
             },
             launchCommand: {
               type: 'string',
-              description: 'Command, app path, or bundle identifier to launch when target is launch',
+              description: 'Command, app path, or bundle identifier to launch when startup/cold-launch behavior is the target. Prefer processName with a PID for already-running apps.',
             },
             launchArguments: {
               type: 'array',
@@ -485,12 +485,26 @@ export class XCTraceAnalyzerServer {
         content: [
           {
             type: 'text',
-            text: `Error: ${err.message}`,
+            text: this.formatToolError(err),
           },
         ],
         isError: true,
       };
     }
+  }
+
+  private formatToolError(error: Error): string {
+    const message = `Error: ${error.message}`;
+    if (!this.isTraceTocExportFailure(error.message)) {
+      return message;
+    }
+
+    return [
+      message,
+      '',
+      '## Next Steps',
+      ...this.traceExportFailureNextSteps().map((step) => `- ${step}`),
+    ].join('\n');
   }
 
   /**
@@ -1017,7 +1031,9 @@ export class XCTraceAnalyzerServer {
       return {
         fileLabel: command,
         reportLabel: `launch: ${command}`,
-        workflowWarnings: [],
+        workflowWarnings: [
+          `Launch target "${command}" records startup/cold-launch behavior. For general hangs or CPU bottlenecks in an already-running app, prefer attach-by-PID. Launch traces can be saved but fail TOC export on some Xcode setups.`,
+        ],
         recordOptions: {
           launchCommand: command,
           launchArguments: this.optionalStringArray(args?.launchArguments, 'launchArguments'),
@@ -1313,12 +1329,16 @@ export class XCTraceAnalyzerServer {
     label: string;
   }): string[] {
     const notes = [
+      'Default recording duration is 60s. Use 20-30s only for explicit startup/cold-launch checks; otherwise record long enough to reproduce the hang.',
       'Use outputFormat: "both" while validating a profiling workflow so the report includes Markdown plus structured supportStatus/exportAttempts.',
       'For already-running macOS apps, attach by PID is the most reliable path when multiple app instances are running.',
       'If Time Profiler, Hangs, or another family reports not_exportable, inspect Export Diagnostics before drawing performance conclusions.',
     ];
 
     if (target.mode === 'launch') {
+      notes.push(
+        'Do not select launch mode just because a built .app path exists; use it only when startup behavior is the explicit target.',
+      );
       notes.push(
         'Launch-mode traces can be saved but still fail xctrace export --toc with Document Missing Template Error; treat that as an exportability failure and retry with attach-by-PID.'
       );
@@ -1536,6 +1556,11 @@ export class XCTraceAnalyzerServer {
       lines.push(...profile.workflowWarnings.map((warning) => `- ${warning}`));
       lines.push('');
     }
+    if (profile.results.some((result) => result.error && this.isTraceTocExportFailure(result.error))) {
+      lines.push('## Next Steps');
+      lines.push(...this.traceExportFailureNextSteps().map((step) => `- ${step}`));
+      lines.push('');
+    }
 
     lines.push('## Trace Files');
     for (const result of profile.results) {
@@ -1749,6 +1774,35 @@ export class XCTraceAnalyzerServer {
     lines.push('');
   }
 
+  private appendTraceExportFailureNextSteps(lines: string[], analysis: Analysis): void {
+    const tocFailure = analysis.exportAttempts?.some((attempt) =>
+      attempt.kind === 'toc' &&
+      attempt.status === 'failed' &&
+      this.isTraceTocExportFailure(attempt.message ?? '')
+    );
+    if (!tocFailure) {
+      return;
+    }
+
+    lines.push('## Next Steps');
+    lines.push(...this.traceExportFailureNextSteps().map((step) => `- ${step}`));
+    lines.push('');
+  }
+
+  private isTraceTocExportFailure(message: string): boolean {
+    return /could not export (its )?TOC|could not export the trace TOC|failed to export TOC|Document Missing Template Error/i.test(message);
+  }
+
+  private traceExportFailureNextSteps(): string[] {
+    return [
+      'Treat this trace as saved but not exportable; do not interpret missing Hangs or "no issues" as a valid result.',
+      'Do not retry the same launch target with more launch templates unless startup-only exportability is being tested; the trace container is failing before table parsing.',
+      'For an already-running app, retry with profile_running_app using the exact PID in processName.',
+      'If the environment cannot list processes, ask the user for the PID or have them close duplicate app instances before attaching.',
+      'Use outputFormat: "both" so supportStatus and exportAttempts remain visible.',
+    ];
+  }
+
   private profileRecommendations(results: ProfileTraceResult[]): string[] {
     const recommendations = new Set<string>();
 
@@ -1801,6 +1855,7 @@ export class XCTraceAnalyzerServer {
 
     this.appendSupportStatus(lines, analysis);
     this.appendExportDiagnostics(lines, analysis);
+    this.appendTraceExportFailureNextSteps(lines, analysis);
 
     // Statistics
     lines.push('## Performance Statistics');

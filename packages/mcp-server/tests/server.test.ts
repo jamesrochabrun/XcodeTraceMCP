@@ -105,6 +105,7 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).toContain('"processName": "MyApp"');
     expect(result.content[0].text).toContain('"preset": "full"');
     expect(result.content[0].text).toContain('## Workflow Notes');
+    expect(result.content[0].text).toContain('Default recording duration is 60s');
     expect(result.content[0].text).toContain('rerun with the exact PID as processName');
   });
 
@@ -140,6 +141,7 @@ describe('XCTraceAnalyzerServer', () => {
     expect(payload.target.mode).toBe('launch');
     expect(payload.workflowNotes).toEqual(
       expect.arrayContaining([
+        expect.stringContaining('Do not select launch mode just because a built .app path exists'),
         expect.stringContaining('Document Missing Template Error'),
       ])
     );
@@ -321,6 +323,32 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).not.toContain('\n    at ');
   });
 
+  it('adds next steps to saved but non-exportable trace errors', async () => {
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () => analysis(),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {
+        throw new Error('Trace was saved but xctrace could not export its TOC: Document Missing Template Error');
+      },
+    });
+
+    const result = await server.callTool('track_running_app', {
+      target: 'launch',
+      launchCommand: '/tmp/MyApp.app',
+      template: 'Time Profiler',
+      durationSeconds: 20,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('## Next Steps');
+    expect(result.content[0].text).toContain('do not interpret missing Hangs');
+    expect(result.content[0].text).toContain('retry with profile_running_app using the exact PID');
+  });
+
   it('renders additional instrument analysis sections in analyze_trace output', async () => {
     const server = new XCTraceAnalyzerServer({
       analyzeTraceFile: async () =>
@@ -380,6 +408,44 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).toContain('- Peak Memory: 700.0 MB');
     expect(result.content[0].text).toContain('High peak memory usage');
     expect(result.content[0].text).toContain('### Network Analysis');
+  });
+
+  it('adds next steps when analyze_trace cannot export the TOC', async () => {
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () =>
+        analysis({
+          summary: 'Trace analysis is incomplete because xctrace could not export the trace TOC.',
+          exportAttempts: [
+            {
+              kind: 'toc',
+              status: 'failed',
+              message: 'Failed to export TOC from trace: /tmp/broken.trace',
+            },
+          ],
+          supportStatus: [
+            {
+              kind: 'time-profile',
+              status: 'not_exportable',
+              reason: 'xctrace could not export the trace TOC.',
+              sourceSchemas: [],
+            },
+          ],
+        }),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    const result = await server.callTool('analyze_trace', {
+      tracePath: '/tmp/broken.trace',
+    });
+
+    expect(result.content[0].text).toContain('## Export Diagnostics');
+    expect(result.content[0].text).toContain('## Next Steps');
+    expect(result.content[0].text).toContain('Do not retry the same launch target');
   });
 
   it('returns structured JSON when requested', async () => {
@@ -563,6 +629,8 @@ describe('XCTraceAnalyzerServer', () => {
       outputPath: '/tmp/MyTool.trace',
     });
     expect(result.content[0].text).toContain('- Target: launch: /tmp/MyTool');
+    expect(result.content[0].text).toContain('## Workflow Warnings');
+    expect(result.content[0].text).toContain('startup/cold-launch behavior');
     expect(result.content[0].text).toContain('Analysis skipped.');
   });
 

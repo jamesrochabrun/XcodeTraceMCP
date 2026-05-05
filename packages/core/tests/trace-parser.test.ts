@@ -117,4 +117,41 @@ describe('TraceParser', () => {
       }),
     ]);
   });
+
+  it('marks analysis families not_exportable when the trace TOC cannot be exported', async () => {
+    const parser = new TraceParser({
+      exportTOC: async () => {
+        throw new Error('Document Missing Template Error');
+      },
+      exportTable: async () => {
+        throw new Error('Document Missing Template Error');
+      },
+    });
+
+    const trace = await parser.parseTrace('packages/core/package.json');
+
+    expect(trace.exportAttempts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'toc',
+          status: 'failed',
+          message: 'Document Missing Template Error',
+        }),
+      ])
+    );
+    expect(trace.supportStatus?.map((status) => status.status)).toEqual([
+      'not_exportable',
+      'not_exportable',
+      'not_exportable',
+      'not_exportable',
+      'not_exportable',
+      'not_exportable',
+    ]);
+    expect(trace.supportStatus?.[0]).toEqual(
+      expect.objectContaining({
+        kind: 'time-profile',
+        reason: expect.stringContaining('could not export the trace TOC'),
+      })
+    );
+  });
 });

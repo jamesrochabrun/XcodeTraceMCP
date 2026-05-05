@@ -428,11 +428,29 @@ export async function recordTrace(options: RecordOptions): Promise<void> {
   const traceWritten = await traceArtifactExists(options.outputPath);
 
   if (traceWritten) {
+    try {
+      await exportTOC(options.outputPath);
+    } catch (error) {
+      const exportError = error as XCTraceError;
+      const exportDetails = exportError.stderr || exportError.message;
+      const recordDetails = processErrorOutput({ stdout: result.stdout, stderr: result.stderr });
+      throw new XCTraceError(
+        [
+          `Trace was saved but xctrace could not export its TOC: ${options.outputPath}`,
+          exportDetails,
+          recordDetails ? `record output: ${recordDetails}` : '',
+        ]
+          .filter(Boolean)
+          .join(': '),
+        exportError.exitCode ?? result.exitCode ?? undefined,
+        exportDetails
+      );
+    }
     return;
   }
 
   const details = processErrorOutput({ stdout: result.stdout, stderr: result.stderr });
-  const target = options.processName ?? options.appIdentifier ?? 'all processes';
+  const target = options.processName ?? options.launchCommand ?? options.appIdentifier ?? 'all processes';
   const exitDetail =
     result.signal != null
       ? ` (signal ${result.signal})`

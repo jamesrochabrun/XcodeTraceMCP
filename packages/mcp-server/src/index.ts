@@ -153,11 +153,11 @@ export class XCTraceAnalyzerServer {
             },
             processName: {
               type: 'string',
-              description: 'Running process name or pid, if known',
+              description: 'Running process name or pid, if known. Prefer a pid when multiple app instances may be running.',
             },
             launchCommand: {
               type: 'string',
-              description: 'Command, app path, or bundle identifier to launch, if known',
+              description: 'Command, app path, or bundle identifier to launch, if startup behavior is the target',
             },
             tracePath: {
               type: 'string',
@@ -267,7 +267,7 @@ export class XCTraceAnalyzerServer {
           properties: {
             processName: {
               type: 'string',
-              description: 'Running process name or pid to attach to, for example MyApp',
+              description: 'Running process name or pid to attach to, for example MyApp. Use a pid when the name is ambiguous.',
             },
             target: {
               type: 'string',
@@ -349,7 +349,7 @@ export class XCTraceAnalyzerServer {
           properties: {
             processName: {
               type: 'string',
-              description: 'Running process name or pid to attach to, for example MyApp',
+              description: 'Running process name or pid to attach to, for example MyApp. Use a pid when the name is ambiguous.',
             },
             target: {
               type: 'string',
@@ -518,6 +518,7 @@ export class XCTraceAnalyzerServer {
       platform,
       target,
     });
+    const workflowNotes = this.advisorWorkflowNotes(target);
 
     const structured = {
       request,
@@ -526,6 +527,7 @@ export class XCTraceAnalyzerServer {
       capabilities,
       recommended: recommendations[0],
       options: recommendations,
+      workflowNotes,
     };
 
     return {
@@ -1279,6 +1281,33 @@ export class XCTraceAnalyzerServer {
     });
   }
 
+  private advisorWorkflowNotes(target: {
+    mode: 'attach' | 'launch' | 'all-processes' | 'unknown' | string;
+    label: string;
+  }): string[] {
+    const notes = [
+      'Use outputFormat: "both" while validating a profiling workflow so the report includes Markdown plus structured supportStatus/exportAttempts.',
+      'For already-running macOS apps, attach by PID is the most reliable path when multiple app instances are running.',
+      'If Time Profiler, Hangs, or another family reports not_exportable, inspect Export Diagnostics before drawing performance conclusions.',
+    ];
+
+    if (target.mode === 'launch') {
+      notes.push(
+        'Launch-mode traces can be saved but still fail xctrace export --toc with Document Missing Template Error; treat that as an exportability failure and retry with attach-by-PID.'
+      );
+    } else if (target.mode === 'attach' && !/^\d+$/.test(target.label)) {
+      notes.push(
+        'If xctrace reports the process name is ambiguous, rerun with the exact PID as processName.'
+      );
+    } else if (target.mode === 'unknown') {
+      notes.push(
+        'If the app is already running, find its PID and pass it as processName; use launchCommand only when startup behavior is the target.'
+      );
+    }
+
+    return notes;
+  }
+
   private formatProfileAdvisorOutput(advice: {
     request: string;
     inferredIntent: string;
@@ -1296,6 +1325,7 @@ export class XCTraceAnalyzerServer {
       tool: string;
       arguments: Record<string, unknown>;
     }>;
+    workflowNotes: string[];
   }): string {
     const lines: string[] = [];
 
@@ -1322,6 +1352,12 @@ export class XCTraceAnalyzerServer {
     lines.push('## Other Useful Options');
     for (const option of advice.options.slice(1, 6)) {
       lines.push(`- ${option.label}: \`${option.tool}\` - ${option.when}`);
+    }
+
+    if (advice.workflowNotes.length > 0) {
+      lines.push('');
+      lines.push('## Workflow Notes');
+      lines.push(...advice.workflowNotes.map((note) => `- ${note}`));
     }
 
     const warnings = advice.capabilities.warnings;

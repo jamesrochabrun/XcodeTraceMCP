@@ -24,6 +24,20 @@ High-level flow:
 
 Use this first when the user says something vague like "profile my app", "let's profile", or "what can we inspect?" It suggests the best workflow and returns exact next tool-call arguments for `profile_running_app`, `track_running_app`, `analyze_trace`, or `compare_traces`.
 
+When driving the MCP from another app repository, prefer this prompt first:
+
+```text
+Use xctrace-analyzer profile_advisor first. I want to profile this app for hangs and CPU bottlenecks. Prefer attach-by-PID if the app is already running. Use outputFormat both. If launch-mode traces fail TOC export, report that as an exportability failure and retry with attach mode.
+```
+
+Recommended workflow:
+
+1. Use `profile_advisor` for vague requests.
+2. If the app is already running, prefer `profile_running_app` with a PID in `processName`, especially when several processes share the same name.
+3. Use `outputFormat: "both"` while validating a workflow so the response includes Markdown plus structured `supportStatus` and `exportAttempts`.
+4. Use launch mode only when startup behavior is the target. If the trace is saved but `xctrace export --toc` fails with `Document Missing Template Error`, treat the run as not exportable and retry with attach-by-PID.
+5. For hangs, record for long enough to reproduce the issue, then inspect `## Hangs`, Support Matrix, and Export Diagnostics before drawing conclusions from "no issues" summaries.
+
 ### `profile_running_app`
 
 Use this for broad profiling requests like "start profiling MyApp for 60 seconds" or "give me a full performance report." It records one combined trace, then analyzes it. It supports attach, launch, and all-processes target modes; `processName` is the attach shorthand.

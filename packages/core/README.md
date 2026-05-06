@@ -2,13 +2,14 @@
 
 > Core analysis library for Xcode Instruments performance traces
 
-A TypeScript library for parsing and analyzing Xcode Instruments `.trace` files, identifying Time Profiler bottlenecks and additional Memory, Network, Energy, Allocations, and Leaks findings.
+A TypeScript library for parsing and analyzing Xcode Instruments `.trace` files, identifying Time Profiler bottlenecks, app-attributed user-code frames, and additional Memory, Network, Energy, Allocations, and Leaks findings.
 
 ## Features
 
 - 📊 Parse Time Profiler traces from xctrace XML output
 - 🧭 Parse Memory, Network, Energy, Allocations, and Leaks tables when exportable
 - 🔍 Identify slow functions and performance bottlenecks
+- 🎯 Attribute Time Profiler samples to Top User-Code Frames
 - 📈 Compare traces to detect performance regressions
 - 💡 Generate actionable optimization recommendations
 - 🎯 Pattern-based suggestion engine (image caching, async operations, etc.)
@@ -21,7 +22,7 @@ The core package is the reusable analysis layer behind the MCP server. It does n
 - `xctrace` process utilities for recording, exporting TOCs, exporting XPath tables, and exporting HAR data
 - Capability detection and symbolication utilities for local `xctrace`
 - `TraceParser` for normalizing Xcode `.trace` XML/HAR data into typed TypeScript structures
-- `PerformanceAnalyzer` for Time Profiler statistics, bottlenecks, and summaries
+- `PerformanceAnalyzer` for Time Profiler statistics, bottlenecks, user-code frame attribution, and summaries
 - `RecommendationEngine` for CPU, memory, network, allocation, leak, and energy recommendations
 - `ComparativeAnalyzer` for Time Profiler baseline/current regression checks
 
@@ -43,10 +44,13 @@ import { analyzeTraceFile, compareTraceFiles } from '@xctrace-analyzer/core';
 const analysis = await analyzeTraceFile('/path/to/app.trace', {
   slowThreshold: 100, // ms
   topN: 10,
+  timeRangeMs: { startMs: 2000, endMs: 7000 },
+  userBinaryHints: ['MyApp'],
 });
 
 console.log(analysis.summary);
 console.log('Bottlenecks:', analysis.bottlenecks);
+console.log('User-code frames:', analysis.userFrameProfiles);
 console.log('Recommendations:', analysis.recommendations);
 
 // Compare two traces
@@ -79,6 +83,8 @@ interface AnalysisOptions {
   topN?: number;                // show top N functions (default: 10)
   includeRecommendations?: boolean; // generate recommendations (default: true)
   minCallCount?: number;        // minimum calls to consider (default: 1)
+  timeRangeMs?: { startMs: number; endMs: number }; // trace-relative window
+  userBinaryHints?: string[];    // app/module names for user-code attribution
 }
 ```
 
@@ -223,10 +229,25 @@ interface Analysis {
   bottlenecks: Bottleneck[];
   recommendations: Recommendation[];
   topFunctions: FunctionProfile[];
+  userFrameProfiles?: UserFrameProfile[];
   instrumentAnalyses: InstrumentAnalysis[];
   supportStatus?: AnalysisSupportStatus[];
   exportAttempts?: ExportAttempt[];
   summary: string;
+}
+```
+
+### UserFrameProfile
+
+App-attributed Time Profiler frame. The analyzer walks each sample backtrace from leaf to root and aggregates the deepest frame whose module matches TOC-derived user process names or `userBinaryHints`.
+
+```typescript
+interface UserFrameProfile {
+  name: string;
+  module?: string;
+  selfTime: number;
+  sampleCount: number;
+  percentage: number;
 }
 ```
 

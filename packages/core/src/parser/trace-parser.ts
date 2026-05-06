@@ -264,6 +264,7 @@ export class TraceParser {
       const tocData = this.xmlParser.parse(tocXML);
       const schemas = this.extractSchemas(tocData);
       const tableDescriptors = this.extractTableDescriptors(tocData);
+      const userProcessNames = this.extractUserProcessNames(tocData);
       this.exportAttempts.push({
         kind: 'toc',
         status: schemas.length > 0 ? 'success' : 'empty',
@@ -281,6 +282,9 @@ export class TraceParser {
         duration: 0,
         template: 'Unknown',
       };
+      if (userProcessNames.length > 0) {
+        metadata.userProcessNames = userProcessNames;
+      }
 
       // Try to extract various metadata fields
       if (run['@_number']) {
@@ -1200,6 +1204,70 @@ export class TraceParser {
 
     visit(tocData);
     return Array.from(schemas);
+  }
+
+  private extractUserProcessNames(tocData: any): string[] {
+    const names = new Set<string>();
+
+    const visit = (node: any, keyName?: string, attachedTarget = false) => {
+      if (!node || typeof node !== 'object') {
+        return;
+      }
+
+      const currentAttached = attachedTarget || this.isAttachedTargetNode(keyName, node);
+      if (keyName === 'process') {
+        const path = this.processPath(node);
+        const name = this.processNameFromNode(node, path);
+        if (name && (currentAttached || !this.isSystemProcessPath(path))) {
+          names.add(name);
+        }
+      }
+
+      for (const [key, value] of Object.entries(node)) {
+        if (key.startsWith('@_')) {
+          continue;
+        }
+        for (const child of this.arrayOf(value)) {
+          visit(child, key, currentAttached);
+        }
+      }
+    };
+
+    visit(tocData);
+    return Array.from(names);
+  }
+
+  private isAttachedTargetNode(keyName: string | undefined, node: any): boolean {
+    if (keyName !== 'target') {
+      return false;
+    }
+    const type = node?.['@_type'] ?? node?.type;
+    return typeof type === 'string' && type.toLowerCase() === 'attached';
+  }
+
+  private processPath(node: any): string | undefined {
+    const path = node?.['@_path'] ?? node?.path ?? node?.executablePath;
+    return typeof path === 'string' && path.length > 0 ? path : undefined;
+  }
+
+  private processNameFromNode(node: any, path?: string): string | undefined {
+    const rawName = this.nodeName(node) ?? this.readFmtField(node);
+    if (rawName) {
+      return rawName;
+    }
+    if (!path) {
+      return undefined;
+    }
+    return basename(path).replace(/\.(app|xpc|appex|framework)$/i, '') || undefined;
+  }
+
+  private isSystemProcessPath(path?: string): boolean {
+    if (!path) {
+      return false;
+    }
+    return path.startsWith('/System/') ||
+      path.startsWith('/usr/lib/') ||
+      path.startsWith('/usr/libexec/');
   }
 
   private extractTableDescriptors(tocData: any): TraceTableDescriptor[] {

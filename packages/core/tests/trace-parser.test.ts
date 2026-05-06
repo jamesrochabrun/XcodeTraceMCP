@@ -276,6 +276,32 @@ describe('TraceParser', () => {
     );
   });
 
+  it('extracts user process names from attached and non-system TOC processes', async () => {
+    const parser = new TraceParser({
+      exportTOC: async () => `
+        <trace-toc>
+          <run number="1">
+            <target type="attached">
+              <process name="AgentHub" path="/Applications/AgentHub.app/Contents/MacOS/AgentHub"/>
+            </target>
+            <target type="launched">
+              <process name="HelperTool" path="/Users/me/Build/HelperTool"/>
+              <process name="libsystem_kernel.dylib" path="/usr/lib/system/libsystem_kernel.dylib"/>
+            </target>
+            <data>
+              <table schema="time-profile"/>
+            </data>
+          </run>
+        </trace-toc>
+      `,
+      exportTable: async () => '',
+    });
+
+    const trace = await parser.parseTrace('packages/core/package.json');
+
+    expect(trace.metadata.userProcessNames).toEqual(['AgentHub', 'HelperTool']);
+  });
+
   it('scopes Time Profiler samples and hang events to a requested time range', async () => {
     const parser = new TraceParser({
       exportTOC: async () => `

@@ -41,6 +41,7 @@ Recommended workflow:
 7. Interpret `partial` as "some usable rows parsed" and `not_exportable` as "Xcode exposed schemas but exported no usable rows." Do not treat `not_exportable` as evidence of no issues.
 8. If Time Profiler reports "failed to parse," treat CPU samples as unavailable and inspect Export Diagnostics; the trace may still contain usable Hangs, Memory, Network, Allocations, or Leaks data.
 9. After identifying a hang start and duration, rerun `analyze_trace` with `timeRangeMs: { startMs, endMs }` around that interval to answer "what ran during the hang?"
+10. Use `## Top User-Code Frames` to answer "which of my code was slow?" Pass `userBinaryHints` if module names do not match the process names discovered from the TOC.
 
 ### `profile_running_app`
 
@@ -65,6 +66,7 @@ Report contents:
 - Recording metadata and saved trace path
 - Support matrix and export diagnostics
 - CPU / Time Profiler bottlenecks
+- Top User-Code Frames for app-attributed CPU work
 - Time Profiler parse-failure callouts when CPU samples could not be parsed
 - Leaks findings when exportable
 - Allocation metrics and churn findings when exportable
@@ -77,7 +79,7 @@ Use this when the user names one specific Instruments template, such as `Leaks` 
 
 ### `analyze_trace`
 
-Use this when the user already has a `.trace` file. It does not record. It can optionally symbolicate to a temporary trace with `dsymPath`, exports the trace TOC, discovers supported schemas, parses Time Profiler and supported instrument data, then returns one analysis report. Use `timeRangeMs` to restrict Time Profiler samples and hang events to a trace-relative window. Use `outputFormat: "json"` or `"both"` when callers need structured output. If Time Profiler parsing fails, report it as an analyzer/export failure rather than zero CPU work.
+Use this when the user already has a `.trace` file. It does not record. It can optionally symbolicate to a temporary trace with `dsymPath`, exports the trace TOC, discovers supported schemas, parses Time Profiler and supported instrument data, then returns one analysis report. Use `timeRangeMs` to restrict Time Profiler samples and hang events to a trace-relative window. Use `userBinaryHints` to supplement app/module names for Top User-Code Frames when TOC metadata is insufficient. Use `outputFormat: "json"` or `"both"` when callers need structured output. If Time Profiler parsing fails, report it as an analyzer/export failure rather than zero CPU work.
 
 ### `compare_traces`
 
@@ -100,6 +102,7 @@ Use this for Time Profiler baseline/current regression checks. It reports total-
 - Support status must come from export attempts: `supported` has successful exports, `partial` has successful exports plus failed/empty/skipped attempts, `not_exportable` has schemas but no successful exports, and `unsupported` has no matching schemas.
 - Failed Time Profiler parsing should be surfaced through `PerformanceStats.timeProfileError` and MCP Export Diagnostics, not hidden behind "0 threads" summaries.
 - `timeRangeMs` is trace-relative milliseconds. Filter Time Profiler samples before aggregation and include hang events that overlap the window. It scopes analysis; it does not mutate or crop the source `.trace`.
+- Top User-Code Frames should use TOC-derived user process names plus `AnalysisOptions.userBinaryHints`, walk sample backtraces from leaf to root, and aggregate the deepest matching module frame by sample weight.
 - Use temp output paths for XML/HAR exports and symbolication so commands do not dirty the repo or mutate source traces.
 - Real `.trace` files should stay out of git. Use ignored local directories such as `test-traces/` for manual validation.
 

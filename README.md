@@ -124,7 +124,7 @@ Claude: [Lists all templates on your system]
 
 ## Supported Scope
 
-This repository is a local, repo-installable MCP server. `profile_running_app` can attach to a process, launch a target, or record all processes with one combined `xcrun xctrace record` session, save the `.trace`, and analyze it. `track_running_app` records one specific template. `analyze_trace` auto-detects Time Profiler, Memory, Network, Energy, Allocations, and Leaks data exported by `xcrun xctrace`; each area is reported as supported, partial, not exportable, or unsupported. Existing traces can be scoped with `timeRangeMs` to answer "what ran during this hang window?" without re-recording. If Time Profiler export or parsing fails, the report says it failed to parse instead of presenting zero-thread CPU data as a valid result. `compare_traces` remains focused on Time Profiler regressions. Public npm publishing, a standalone CLI, and full Instruments.app GUI parity are out of scope for the current internal production target.
+This repository is a local, repo-installable MCP server. `profile_running_app` can attach to a process, launch a target, or record all processes with one combined `xcrun xctrace record` session, save the `.trace`, and analyze it. `track_running_app` records one specific template. `analyze_trace` auto-detects Time Profiler, Memory, Network, Energy, Allocations, and Leaks data exported by `xcrun xctrace`; each area is reported as supported, partial, not exportable, or unsupported. Existing traces can be scoped with `timeRangeMs` to answer "what ran during this hang window?" without re-recording, and Top User-Code Frames attribute Time Profiler samples to app binaries instead of system frames. If Time Profiler export or parsing fails, the report says it failed to parse instead of presenting zero-thread CPU data as a valid result. `compare_traces` remains focused on Time Profiler regressions. Public npm publishing, a standalone CLI, and full Instruments.app GUI parity are out of scope for the current internal production target.
 
 ---
 
@@ -150,7 +150,7 @@ MCP server exposing the core library to AI assistants.
 - `profile_advisor` - First-step helper for vague requests like "profile my app"; suggests the best workflow and exact next MCP tool call
 - `profile_running_app` - Run one combined profiling recording against a running app and return one report. For macOS, the default `full` preset records Time Profiler with Leaks, Allocations, and HTTP Traffic instruments. Use `full-ios` when profiling iOS/iPadOS and you want Power Profiler too.
 - `track_running_app` - Attach to a running app, capture a trace, and optionally analyze it immediately
-- `analyze_trace` - Analyze Time Profiler bottlenecks plus supported Memory, Network, Energy, Allocations, and Leaks data; supports optional dSYM symbolication, time-window scoping, and JSON output
+- `analyze_trace` - Analyze Time Profiler bottlenecks plus supported Memory, Network, Energy, Allocations, and Leaks data; supports optional dSYM symbolication, time-window scoping, user-code frame attribution, and JSON output
 - `compare_traces` - Detect Time Profiler regressions between builds; supports optional dSYM symbolication and JSON output
 - `list_templates`, `list_devices`, `check_xctrace`
 
@@ -172,7 +172,7 @@ For reliable validation, prefer attach-by-PID for already-running macOS apps. La
 
 Hang results are scoped to the captured trace window. If the report says no exported hang events were found, that does not rule out startup or interaction hangs that happened outside the recording.
 
-Use `outputFormat: "both"` while validating workflows. In the Support Matrix, `partial` means usable rows were parsed but some schemas failed, were empty, or were skipped. `not_exportable` means Xcode exposed schemas but exported no usable rows, so do not interpret it as "no issues." If Time Profiler says it failed to parse, inspect Export Diagnostics and treat the CPU section as unavailable for that run. After the `## Hangs` section identifies a start time and duration, rerun `analyze_trace` with `timeRangeMs` around that interval to scope CPU samples and hang events to the problematic window.
+Use `outputFormat: "both"` while validating workflows. In the Support Matrix, `partial` means usable rows were parsed but some schemas failed, were empty, or were skipped. `not_exportable` means Xcode exposed schemas but exported no usable rows, so do not interpret it as "no issues." If Time Profiler says it failed to parse, inspect Export Diagnostics and treat the CPU section as unavailable for that run. After the `## Hangs` section identifies a start time and duration, rerun `analyze_trace` with `timeRangeMs` around that interval to scope CPU samples and hang events to the problematic window. Use `## Top User-Code Frames` for the app-owned functions in that window; pass `userBinaryHints` when module names do not match the process name.
 
 It can suggest:
 - `profile_running_app` with `full`, `cpu`, `memory`, `network`, or `full-ios`
@@ -190,6 +190,7 @@ Report sections include:
 - Summary, trace path, process, preset, and recording strategy
 - Support matrix and export diagnostics
 - CPU / Time Profiler bottlenecks
+- Top User-Code Frames for app-attributed CPU work
 - Time Profiler parse-failure callouts when CPU samples could not be parsed
 - Leaks findings when exportable
 - Allocation metrics and churn findings when exportable
@@ -223,6 +224,7 @@ It can report:
 - Additional Memory, Network, Energy, Allocations, and Leaks sections when Xcode exposes usable tables
 - Clear status when a family is `supported`, `partial`, `not_exportable`, or `unsupported`
 - Scoped Time Profiler samples and hang events with `timeRangeMs: { startMs, endMs }`
+- Top User-Code Frames, using trace process metadata plus optional `userBinaryHints`
 - A Time Profiler parse-failure message when CPU samples could not be parsed; this is an analyzer/export issue, not evidence of zero CPU work
 - Machine-readable JSON via `outputFormat: "json"` or Markdown plus JSON via `outputFormat: "both"`
 
@@ -232,6 +234,7 @@ Example scoped follow-up after a hang starts near 2 seconds and lasts about 5 se
 {
   "tracePath": "/path/to/app.trace",
   "timeRangeMs": { "startMs": 2000, "endMs": 7000 },
+  "userBinaryHints": ["MyApp"],
   "outputFormat": "both"
 }
 ```

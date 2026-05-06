@@ -112,6 +112,96 @@ describe('PerformanceAnalyzer', () => {
     expect(analysis.summary).toContain('Time Profiler totals are unavailable');
     expect(analysis.summary).not.toContain('No significant performance bottlenecks detected');
   });
+
+  it('aggregates deepest matching user-binary frames from Time Profiler samples', () => {
+    const analysis = new PerformanceAnalyzer().analyze(
+      {
+        metadata: {
+          fileName: 'sample.trace',
+          filePath: '/tmp/sample.trace',
+          duration: 1000,
+          template: 'Time Profiler',
+          userProcessNames: ['AgentHub'],
+        },
+        timeProfile: {
+          totalDuration: 1000,
+          samples: [
+            {
+              timestamp: 100,
+              threadId: 1,
+              weight: 40,
+              backtrace: ['AgentHub`MyView.body', 'SwiftUI`ViewRenderer.render', 'libdispatch`_dispatch_main_queue_callback_4CF'],
+            },
+            {
+              timestamp: 200,
+              threadId: 1,
+              weight: 25,
+              backtrace: ['AgentHub`MyView.body', 'AgentHub`ImageLoader.decode'],
+            },
+            {
+              timestamp: 300,
+              threadId: 1,
+              weight: 10,
+              backtrace: ['SwiftUI`ViewRenderer.render', 'libdispatch`_dispatch_main_queue_callback_4CF'],
+            },
+          ],
+          functionProfiles: [],
+        },
+      },
+      { topN: 10 }
+    );
+
+    expect(analysis.userFrameProfiles).toEqual([
+      expect.objectContaining({
+        module: 'AgentHub',
+        name: 'MyView.body',
+        selfTime: 40,
+        sampleCount: 1,
+        percentage: 4,
+      }),
+      expect.objectContaining({
+        module: 'AgentHub',
+        name: 'ImageLoader.decode',
+        selfTime: 25,
+        sampleCount: 1,
+        percentage: 2.5,
+      }),
+    ]);
+  });
+
+  it('uses userBinaryHints when trace metadata does not identify user processes', () => {
+    const analysis = new PerformanceAnalyzer().analyze(
+      {
+        metadata: {
+          fileName: 'sample.trace',
+          filePath: '/tmp/sample.trace',
+          duration: 1000,
+          template: 'Time Profiler',
+        },
+        timeProfile: {
+          totalDuration: 1000,
+          samples: [
+            {
+              timestamp: 100,
+              threadId: 1,
+              weight: 30,
+              backtrace: ['MyAppCore`Renderer.draw', 'SwiftUI`ViewRenderer.render'],
+            },
+          ],
+          functionProfiles: [],
+        },
+      },
+      { userBinaryHints: ['MyApp'] }
+    );
+
+    expect(analysis.userFrameProfiles).toEqual([
+      expect.objectContaining({
+        module: 'MyAppCore',
+        name: 'Renderer.draw',
+        selfTime: 30,
+      }),
+    ]);
+  });
 });
 
 describe('ComparativeAnalyzer', () => {

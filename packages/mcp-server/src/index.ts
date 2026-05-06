@@ -196,6 +196,11 @@ export class XCTraceAnalyzerServer {
               required: ['startMs', 'endMs'],
               description: 'Optional analysis window for an existing trace, useful after identifying a hang interval.',
             },
+            userBinaryHints: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional app/module names used to attribute Time Profiler samples to user code.',
+            },
             outputFormat: {
               type: 'string',
               enum: ['markdown', 'json', 'both'],
@@ -241,6 +246,11 @@ export class XCTraceAnalyzerServer {
               },
               required: ['startMs', 'endMs'],
               description: 'Restrict analysis to a trace-relative window. Useful for asking what ran during a specific hang.',
+            },
+            userBinaryHints: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional app/module names used to attribute Time Profiler samples to user code.',
             },
             outputFormat: {
               type: 'string',
@@ -368,6 +378,11 @@ export class XCTraceAnalyzerServer {
               type: 'number',
               description: 'Number of top functions to show when analyzing Time Profiler data',
             },
+            userBinaryHints: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional app/module names used to attribute Time Profiler samples to user code.',
+            },
           },
           required: [],
         },
@@ -445,6 +460,11 @@ export class XCTraceAnalyzerServer {
             topN: {
               type: 'number',
               description: 'Number of top functions to show when analyzing Time Profiler data',
+            },
+            userBinaryHints: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional app/module names used to attribute Time Profiler samples to user code.',
             },
           },
           required: [],
@@ -547,6 +567,7 @@ export class XCTraceAnalyzerServer {
     const duration = this.optionalPositiveNumber(args?.durationSeconds, 'durationSeconds') ?? 60;
     const platform = this.optionalString(args?.platform, 'platform') ?? 'unknown';
     const timeRangeMs = this.optionalTimeRangeMs(args?.timeRangeMs);
+    const userBinaryHints = this.optionalStringArray(args?.userBinaryHints, 'userBinaryHints');
     if (!['macos', 'ios', 'unknown'].includes(platform)) {
       throw new Error('platform must be macos, ios, or unknown');
     }
@@ -564,6 +585,7 @@ export class XCTraceAnalyzerServer {
       platform,
       target,
       ...(timeRangeMs ? { timeRangeMs } : {}),
+      ...(userBinaryHints ? { userBinaryHints } : {}),
     });
     const workflowNotes = this.advisorWorkflowNotes(target);
 
@@ -599,6 +621,7 @@ export class XCTraceAnalyzerServer {
     const tracePath = this.requiredString(args?.tracePath, 'tracePath');
     const outputFormat = this.outputFormat(args);
     const timeRangeMs = this.optionalTimeRangeMs(args?.timeRangeMs);
+    const userBinaryHints = this.optionalStringArray(args?.userBinaryHints, 'userBinaryHints');
     const preparedTracePath = await this.prepareTraceForAnalysis(
       tracePath,
       this.optionalString(args?.dsymPath, 'dsymPath')
@@ -609,6 +632,7 @@ export class XCTraceAnalyzerServer {
       topN,
       includeRecommendations: true,
       ...(timeRangeMs ? { timeRangeMs } : {}),
+      ...(userBinaryHints ? { userBinaryHints } : {}),
     };
 
     const analysis = await this.deps.analyzeTraceFile(preparedTracePath, options);
@@ -737,10 +761,12 @@ export class XCTraceAnalyzerServer {
       };
     }
 
+    const userBinaryHints = this.optionalStringArray(args?.userBinaryHints, 'userBinaryHints');
     const options: AnalysisOptions = {
       slowThreshold: args?.slowThreshold,
       topN: args?.topN,
       includeRecommendations: true,
+      ...(userBinaryHints ? { userBinaryHints } : {}),
     };
 
     const analysis = await this.deps.analyzeTraceFile(outputPath, options);
@@ -789,6 +815,7 @@ export class XCTraceAnalyzerServer {
     const startedAt = new Date().toISOString().replace(/[:.]/g, '-');
     const results: ProfileTraceResult[] = [];
     const capabilityWarnings = await this.profileCapabilityWarnings(profilePreset);
+    const userBinaryHints = this.optionalStringArray(args?.userBinaryHints, 'userBinaryHints');
 
     await mkdir(outputDirectory, { recursive: true });
 
@@ -814,6 +841,7 @@ export class XCTraceAnalyzerServer {
           slowThreshold: args?.slowThreshold,
           topN: args?.topN,
           includeRecommendations: true,
+          ...(userBinaryHints ? { userBinaryHints } : {}),
         })
         : undefined;
 
@@ -983,6 +1011,22 @@ export class XCTraceAnalyzerServer {
     return value;
   }
 
+  private optionalStringArray(value: unknown, fieldName: string): string[] | undefined {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+    if (!Array.isArray(value)) {
+      throw new Error(`${fieldName} must be an array of strings`);
+    }
+    const strings = value.map((item, index) => {
+      if (typeof item !== 'string' || item.trim() === '') {
+        throw new Error(`${fieldName}[${index}] must be a non-empty string`);
+      }
+      return item.trim();
+    });
+    return strings.length > 0 ? strings : undefined;
+  }
+
   private optionalTimeRangeMs(value: unknown): TimeRangeMs | undefined {
     if (value === undefined || value === null) {
       return undefined;
@@ -1121,16 +1165,6 @@ export class XCTraceAnalyzerServer {
       workflowWarnings,
       recordOptions: { processName },
     };
-  }
-
-  private optionalStringArray(value: unknown, fieldName: string): string[] | undefined {
-    if (value === undefined || value === null) {
-      return undefined;
-    }
-    if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
-      throw new Error(`${fieldName} must be an array of strings`);
-    }
-    return value;
   }
 
   private optionalStringMap(value: unknown, fieldName: string): Record<string, string> | undefined {
@@ -1287,6 +1321,7 @@ export class XCTraceAnalyzerServer {
     platform: string;
     target: { mode: string; label: string; args: Record<string, unknown> };
     timeRangeMs?: TimeRangeMs;
+    userBinaryHints?: string[];
   }): Array<{
     label: string;
     when: string;
@@ -1311,6 +1346,7 @@ export class XCTraceAnalyzerServer {
           ...profileTargetArgs,
           preset: fullPreset,
           durationSeconds: input.duration,
+          ...(input.userBinaryHints ? { userBinaryHints: input.userBinaryHints } : {}),
           outputFormat: 'both',
         },
       },
@@ -1322,6 +1358,7 @@ export class XCTraceAnalyzerServer {
           ...profileTargetArgs,
           preset: 'cpu',
           durationSeconds: input.duration,
+          ...(input.userBinaryHints ? { userBinaryHints: input.userBinaryHints } : {}),
           outputFormat: 'both',
         },
       },
@@ -1333,6 +1370,7 @@ export class XCTraceAnalyzerServer {
           ...profileTargetArgs,
           preset: 'memory',
           durationSeconds: input.duration,
+          ...(input.userBinaryHints ? { userBinaryHints: input.userBinaryHints } : {}),
           outputFormat: 'both',
         },
       },
@@ -1344,6 +1382,7 @@ export class XCTraceAnalyzerServer {
           ...profileTargetArgs,
           preset: 'network',
           durationSeconds: input.duration,
+          ...(input.userBinaryHints ? { userBinaryHints: input.userBinaryHints } : {}),
           outputFormat: 'both',
         },
       },
@@ -1354,6 +1393,7 @@ export class XCTraceAnalyzerServer {
         arguments: {
           tracePath: input.args?.tracePath ?? '<path/to/app.trace>',
           ...(input.timeRangeMs ? { timeRangeMs: input.timeRangeMs } : {}),
+          ...(input.userBinaryHints ? { userBinaryHints: input.userBinaryHints } : {}),
           outputFormat: 'both',
         },
       },
@@ -1401,6 +1441,7 @@ export class XCTraceAnalyzerServer {
       'A partial support status means some usable data was parsed; not_exportable means Xcode exposed schemas but exported no usable rows.',
       'If Time Profiler reports a parse failure, treat it as an analyzer/export issue and inspect Export Diagnostics instead of reading it as zero CPU work.',
       'After identifying a hang start/duration, rerun analyze_trace with timeRangeMs around that interval to scope CPU samples and hang events to the problem window.',
+      'Use Top User-Code Frames for the app-attributed CPU answer; pass userBinaryHints if symbol modules do not match the app process name.',
       'For already-running macOS apps, attach by PID is the most reliable path when multiple app instances are running.',
       'A clean idle attach trace does not rule out startup or interaction hangs; reproduce the problematic workflow during the recording window.',
       'If Time Profiler, Hangs, or another family reports not_exportable, inspect Export Diagnostics before drawing performance conclusions.',
@@ -1670,6 +1711,7 @@ export class XCTraceAnalyzerServer {
       this.appendSupportStatus(lines, result.analysis);
       this.appendExportDiagnostics(lines, result.analysis);
       this.appendCpuHighlights(lines, result.analysis);
+      this.appendUserFrameSection(lines, result.analysis);
       lines.push('');
       this.appendHangsSection(lines, result.analysis);
       this.appendInstrumentSections(lines, result.analysis);
@@ -1765,6 +1807,22 @@ export class XCTraceAnalyzerServer {
     lines.push(
       `**Time Profiler:** failed to parse - ${analysis.stats.timeProfileError}. The trace itself was recorded; this is an analyzer error.`
     );
+    lines.push('');
+  }
+
+  private appendUserFrameSection(lines: string[], analysis: Analysis): void {
+    const frames = analysis.userFrameProfiles ?? [];
+    if (frames.length === 0) {
+      return;
+    }
+
+    lines.push('## Top User-Code Frames');
+    for (const frame of frames.slice(0, 10)) {
+      const module = frame.module ? `${frame.module}\`` : '';
+      lines.push(
+        `- ${module}${frame.name}: ${frame.selfTime.toFixed(0)}ms (${frame.percentage.toFixed(1)}%, ${frame.sampleCount} sample${frame.sampleCount === 1 ? '' : 's'})`
+      );
+    }
     lines.push('');
   }
 
@@ -2023,6 +2081,8 @@ export class XCTraceAnalyzerServer {
         lines.push('');
       }
     }
+
+    this.appendUserFrameSection(lines, analysis);
 
     this.appendHangsSection(lines, analysis);
 

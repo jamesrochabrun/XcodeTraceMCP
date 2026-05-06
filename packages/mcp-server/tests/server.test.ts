@@ -109,6 +109,7 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).toContain('partial support status means some usable data was parsed');
     expect(result.content[0].text).toContain('Time Profiler reports a parse failure');
     expect(result.content[0].text).toContain('rerun with the exact PID as processName');
+    expect(result.content[0].text).toContain('Top User-Code Frames');
   });
 
   it('warns launch profiling users about saved but non-exportable traces', async () => {
@@ -164,6 +165,7 @@ describe('XCTraceAnalyzerServer', () => {
       request: 'analyze this trace',
       tracePath: '/tmp/app.trace',
       timeRangeMs: { startMs: 2000, endMs: 7000 },
+      userBinaryHints: ['AgentHub'],
       outputFormat: 'json',
     });
     const payload = JSON.parse(result.content[0].text);
@@ -171,6 +173,7 @@ describe('XCTraceAnalyzerServer', () => {
     expect(payload.recommended.tool).toBe('analyze_trace');
     expect(payload.recommended.arguments.tracePath).toBe('/tmp/app.trace');
     expect(payload.recommended.arguments.timeRangeMs).toEqual({ startMs: 2000, endMs: 7000 });
+    expect(payload.recommended.arguments.userBinaryHints).toEqual(['AgentHub']);
     expect(payload.workflowNotes).toEqual(
       expect.arrayContaining([
         expect.stringContaining('rerun analyze_trace with timeRangeMs'),
@@ -261,6 +264,15 @@ describe('XCTraceAnalyzerServer', () => {
             timeRangeMs: { startMs: 2000, endMs: 7000 },
           },
           summary: 'Scoped analysis found useful data.',
+          userFrameProfiles: [
+            {
+              module: 'AgentHub',
+              name: 'MyView.body',
+              selfTime: 125,
+              sampleCount: 3,
+              percentage: 2.5,
+            },
+          ],
         });
       },
       compareTraceFiles: async () => comparison(),
@@ -274,14 +286,18 @@ describe('XCTraceAnalyzerServer', () => {
     const result = await server.callTool('analyze_trace', {
       tracePath: '/tmp/app.trace',
       timeRangeMs: { startMs: 2000, endMs: 7000 },
+      userBinaryHints: ['AgentHub'],
     });
 
     expect(receivedOptions).toEqual(
       expect.objectContaining({
         timeRangeMs: { startMs: 2000, endMs: 7000 },
+        userBinaryHints: ['AgentHub'],
       })
     );
     expect(result.content[0].text).toContain('**Analysis window:** 00:02.000-00:07.000 (5.00 s)');
+    expect(result.content[0].text).toContain('## Top User-Code Frames');
+    expect(result.content[0].text).toContain('- AgentHub`MyView.body: 125ms (2.5%, 3 samples)');
   });
 
   it('renders a Hangs section when the analysis includes hang events', async () => {

@@ -15,6 +15,7 @@ export interface TraceMetadata {
   template: string;
   recordedAt?: Date;
   xcodeVersion?: string;
+  userProcessNames?: string[];
 }
 
 /**
@@ -30,6 +31,17 @@ export interface FunctionProfile {
   backtrace?: string[];
   lineNumber?: number;
   address?: string;
+}
+
+/**
+ * A Time Profiler frame attributed to the app/user binary rather than system libraries.
+ */
+export interface UserFrameProfile {
+  name: string;
+  module?: string;
+  selfTime: number; // milliseconds
+  sampleCount: number;
+  percentage: number;
 }
 
 /**
@@ -267,6 +279,7 @@ export interface Analysis {
   bottlenecks: Bottleneck[];
   recommendations: Recommendation[];
   topFunctions: FunctionProfile[];
+  userFrameProfiles?: UserFrameProfile[];
   instrumentAnalyses: InstrumentAnalysis[];
   hangs?: HangsData;
   summary: string;
@@ -359,6 +372,7 @@ export interface AnalysisOptions {
   includeRecommendations?: boolean; // default true
   minCallCount?: number; // minimum calls to consider, default 1
   timeRangeMs?: TimeRangeMs; // restrict analysis to a trace-relative window
+  userBinaryHints?: string[]; // app/binary/module names used for user-code frame attribution
 }
 
 /**

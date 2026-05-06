@@ -51,7 +51,7 @@ pnpm verify
 - Use `profile_running_app` for "start profiling", "full report", or "record all issues" requests against an already-running app.
 - Use `profile_advisor` first when the request is vague and the user needs to choose what kind of profiling to run.
 - Use `track_running_app` for a single explicit Instruments template such as Leaks or Allocations.
-- Use `analyze_trace` when the user already has a `.trace` file, especially for scoped follow-up analysis with `timeRangeMs`.
+- Use `analyze_trace` when the user already has a `.trace` file, especially for scoped follow-up analysis with `timeRangeMs` and app attribution via Top User-Code Frames.
 - Use `compare_traces` when the user asks whether a current build regressed against a baseline.
 - Use `list_templates`, `list_devices`, and `check_xctrace` for setup and troubleshooting.
 
@@ -65,6 +65,7 @@ Suggest the best profiling workflow before recording or analyzing anything. This
 - `platform` (optional): `macos`, `ios`, or `unknown`
 - `durationSeconds` (optional): Preferred recording duration
 - `timeRangeMs` (optional): Analysis window for existing-trace recommendations
+- `userBinaryHints` (optional): App/module names used for Top User-Code Frames
 - `outputFormat` (optional): `markdown`, `json`, or `both`
 
 The response includes a recommended next tool call and alternatives for full, CPU, memory/leaks, network, existing trace analysis, and regression comparison. Use `outputFormat: "both"` while validating workflows so the Markdown report and structured `supportStatus` / `exportAttempts` stay visible.
@@ -79,7 +80,7 @@ For already-running macOS apps, attach by PID is usually the most reliable path,
 
 Hang results are scoped to the captured trace window. If the report says no exported hang events were found, that does not rule out startup or interaction hangs that happened outside the recording.
 
-In the Support Matrix, `partial` means usable rows were parsed but some schemas failed, were empty, or were skipped. `not_exportable` means Xcode exposed schemas but exported no usable rows, so it is not a clean "no issues" result. If Time Profiler reports a parse failure, inspect Export Diagnostics and treat CPU samples as unavailable for that run. After a hang start/duration is known, rerun `analyze_trace` with `timeRangeMs` to focus CPU samples and hang events on that window.
+In the Support Matrix, `partial` means usable rows were parsed but some schemas failed, were empty, or were skipped. `not_exportable` means Xcode exposed schemas but exported no usable rows, so it is not a clean "no issues" result. If Time Profiler reports a parse failure, inspect Export Diagnostics and treat CPU samples as unavailable for that run. After a hang start/duration is known, rerun `analyze_trace` with `timeRangeMs` to focus CPU samples and hang events on that window. Use `## Top User-Code Frames` to see app-owned functions instead of system/runtime frames.
 
 ### `profile_running_app`
 
@@ -108,6 +109,7 @@ Report contents:
 - Recording metadata: process, preset, duration, trace path, base template, and instruments
 - Support matrix and export diagnostics
 - CPU / Time Profiler: bottlenecks, top functions, threads, slow function count, and CPU recommendations
+- Top User-Code Frames: app-attributed CPU frames from Time Profiler samples
 - Time Profiler parse-failure callouts when CPU samples could not be parsed
 - Leaks: leak count, leaked bytes, top leak sites, and leak findings when Xcode exports usable data
 - Allocations: allocation counts, allocated bytes, top allocation sites, and churn findings when exportable
@@ -152,11 +154,12 @@ Analyze a single trace file for performance issues. The server auto-detects supp
 - `topN` (optional): Number of top functions to show (default: 10)
 - `dsymPath` (optional): dSYM file or directory. The server writes a temporary symbolicated trace before analysis.
 - `timeRangeMs` (optional): `{ startMs, endMs }` trace-relative window in milliseconds. Use this for follow-up questions like "what ran during this 5 second hang?"
+- `userBinaryHints` (optional): app or module names used when trace metadata cannot identify user binaries
 - `outputFormat` (optional): `markdown`, `json`, or `both`
 
 The report distinguishes unsupported data from non-exportable data. A Time Profiler parse failure is reported as a failed CPU analysis with Export Diagnostics; do not read it as zero CPU work.
 
-Scoped analysis filters Time Profiler samples before function aggregation and filters hang events that overlap the requested window.
+Scoped analysis filters Time Profiler samples before function aggregation and filters hang events that overlap the requested window. Top User-Code Frames walks each sample backtrace from leaf to root and aggregates the deepest frame whose module matches the trace's user process names or `userBinaryHints`.
 
 **Example with Claude:**
 ```

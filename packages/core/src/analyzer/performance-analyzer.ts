@@ -9,10 +9,12 @@ import {
   Bottleneck,
   PerformanceStats,
   FunctionProfile,
+  UserFrameProfile,
   AnalysisError,
 } from '../types.js';
 
-type ResolvedAnalysisOptions = Required<Omit<AnalysisOptions, 'timeRangeMs'>> & Pick<AnalysisOptions, 'timeRangeMs'>;
+type ResolvedAnalysisOptions = Required<Omit<AnalysisOptions, 'timeRangeMs' | 'userBinaryHints'>> &
+  Pick<AnalysisOptions, 'timeRangeMs' | 'userBinaryHints'>;
 
 /**
  * Default analysis options
@@ -43,6 +45,7 @@ export class PerformanceAnalyzer {
 
       // Get top functions by time
       const topFunctions = this.getTopFunctions(trace, opts.topN);
+      const userFrameProfiles = this.computeUserFrameProfiles(trace, opts);
 
       // Generate summary
       const summary = this.generateSummary(trace, stats, bottlenecks);
@@ -53,6 +56,7 @@ export class PerformanceAnalyzer {
         bottlenecks,
         recommendations: [], // Will be filled by RecommendationEngine
         topFunctions,
+        userFrameProfiles,
         instrumentAnalyses: trace.instrumentAnalyses ?? [],
         hangs: trace.hangs,
         supportStatus: trace.supportStatus,
@@ -204,6 +208,103 @@ export class PerformanceAnalyzer {
         ...f,
         percentage: (f.totalTime / totalTime) * 100,
       }));
+  }
+
+  private computeUserFrameProfiles(
+    trace: ParsedTrace,
+    options: ResolvedAnalysisOptions
+  ): UserFrameProfile[] {
+    const timeProfile = trace.timeProfile;
+    if (!timeProfile || !timeProfile.samples.length) {
+      return [];
+    }
+
+    const userBinaryNames = this.userBinaryNames(trace, options);
+    if (userBinaryNames.length === 0) {
+      return [];
+    }
+
+    const totalTime = timeProfile.totalDuration || 1;
+    const profiles = new Map<string, UserFrameProfile>();
+
+    for (const sample of timeProfile.samples) {
+      const frame = this.deepestUserFrame(sample.backtrace, userBinaryNames);
+      if (!frame) {
+        continue;
+      }
+      const key = `${frame.module ?? 'unknown'}::${frame.name}`;
+      let profile = profiles.get(key);
+      if (!profile) {
+        profile = {
+          name: frame.name,
+          module: frame.module,
+          selfTime: 0,
+          sampleCount: 0,
+          percentage: 0,
+        };
+        profiles.set(key, profile);
+      }
+      profile.selfTime += sample.weight;
+      profile.sampleCount += 1;
+    }
+
+    return Array.from(profiles.values())
+      .map((profile) => ({
+        ...profile,
+        percentage: (profile.selfTime / totalTime) * 100,
+      }))
+      .sort((a, b) => b.selfTime - a.selfTime)
+      .slice(0, options.topN);
+  }
+
+  private userBinaryNames(trace: ParsedTrace, options: ResolvedAnalysisOptions): string[] {
+    const names = [
+      trace.metadata.processName ?? '',
+      ...(trace.metadata.userProcessNames ?? []),
+      ...(options.userBinaryHints ?? []),
+    ];
+    const variants = names.flatMap((name) => this.userBinaryNameVariants(name));
+    return Array.from(new Set(variants));
+  }
+
+  private userBinaryNameVariants(name: string): string[] {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      return [];
+    }
+    const withoutParenthetical = trimmed.replace(/\s*\([^)]*\)\s*$/g, '').trim();
+    const withoutExtension = withoutParenthetical.replace(/\.(app|xpc|appex|framework)$/i, '');
+    return [trimmed, withoutParenthetical, withoutExtension]
+      .map((variant) => variant.trim().toLowerCase())
+      .filter((variant) => variant.length > 0);
+  }
+
+  private deepestUserFrame(
+    backtrace: string[],
+    userBinaryNames: string[]
+  ): { name: string; module?: string } | undefined {
+    for (let i = backtrace.length - 1; i >= 0; i--) {
+      const frame = this.parseFrameName(backtrace[i]);
+      if (!frame.module) {
+        continue;
+      }
+      const module = frame.module.toLowerCase();
+      if (userBinaryNames.some((name) => module.includes(name))) {
+        return frame;
+      }
+    }
+    return undefined;
+  }
+
+  private parseFrameName(fullName: string): { name: string; module?: string } {
+    const backtickIndex = fullName.indexOf('`');
+    if (backtickIndex > 0) {
+      return {
+        module: fullName.substring(0, backtickIndex),
+        name: fullName.substring(backtickIndex + 1),
+      };
+    }
+    return { name: fullName };
   }
 
   /**

@@ -69,13 +69,20 @@ export class PerformanceAnalyzer {
     const timeProfile = trace.timeProfile;
 
     if (!timeProfile || !timeProfile.functionProfiles.length) {
-      return {
+      const timeProfileFailure = trace.exportAttempts?.find((attempt) =>
+        attempt.kind === 'time-profile' && attempt.status === 'failed'
+      );
+      const stats: PerformanceStats = {
         totalTime: trace.metadata.duration,
         slowFunctions: 0,
         avgFunctionTime: 0,
         maxFunctionTime: 0,
         threadCount: 0,
       };
+      if (timeProfileFailure) {
+        stats.timeProfileError = timeProfileFailure.message ?? 'Time Profiler export or parsing failed.';
+      }
+      return stats;
     }
 
     const functionTimes = timeProfile.functionProfiles
@@ -273,8 +280,14 @@ export class PerformanceAnalyzer {
       }
     }
 
+    if (stats.timeProfileError) {
+      parts.push(
+        `Time Profiler analysis failed: ${stats.timeProfileError}. The trace itself was recorded; see Export Diagnostics for details.`
+      );
+    }
+
     // Overall assessment
-    if (bottlenecks.length === 0) {
+    if (bottlenecks.length === 0 && !stats.timeProfileError) {
       parts.push('✅ No significant performance bottlenecks detected.');
     } else {
       const critical = bottlenecks.filter(b => b.impact === 'critical').length;
@@ -289,8 +302,12 @@ export class PerformanceAnalyzer {
     }
 
     // Time summary
-    const totalSeconds = (stats.totalTime / 1000).toFixed(1);
-    parts.push(`Total execution time: ${totalSeconds}s across ${stats.threadCount} thread${stats.threadCount > 1 ? 's' : ''}.`);
+    if (!stats.timeProfileError) {
+      const totalSeconds = (stats.totalTime / 1000).toFixed(1);
+      parts.push(`Total execution time: ${totalSeconds}s across ${stats.threadCount} thread${stats.threadCount > 1 ? 's' : ''}.`);
+    } else {
+      parts.push('Time Profiler totals are unavailable because parsing failed.');
+    }
 
     // Top bottleneck
     if (bottlenecks.length > 0) {

@@ -124,7 +124,7 @@ Claude: [Lists all templates on your system]
 
 ## Supported Scope
 
-This repository is a local, repo-installable MCP server. `profile_running_app` can attach to a process, launch a target, or record all processes with one combined `xcrun xctrace record` session, save the `.trace`, and analyze it. `track_running_app` records one specific template. `analyze_trace` auto-detects Time Profiler, Memory, Network, Energy, Allocations, and Leaks data exported by `xcrun xctrace`; each area is reported as supported, partial, not exportable, or unsupported. `compare_traces` remains focused on Time Profiler regressions. Public npm publishing, a standalone CLI, and full Instruments.app GUI parity are out of scope for the current internal production target.
+This repository is a local, repo-installable MCP server. `profile_running_app` can attach to a process, launch a target, or record all processes with one combined `xcrun xctrace record` session, save the `.trace`, and analyze it. `track_running_app` records one specific template. `analyze_trace` auto-detects Time Profiler, Memory, Network, Energy, Allocations, and Leaks data exported by `xcrun xctrace`; each area is reported as supported, partial, not exportable, or unsupported. If Time Profiler export or parsing fails, the report says it failed to parse instead of presenting zero-thread CPU data as a valid result. `compare_traces` remains focused on Time Profiler regressions. Public npm publishing, a standalone CLI, and full Instruments.app GUI parity are out of scope for the current internal production target.
 
 ---
 
@@ -172,6 +172,8 @@ For reliable validation, prefer attach-by-PID for already-running macOS apps. La
 
 Hang results are scoped to the captured trace window. If the report says no exported hang events were found, that does not rule out startup or interaction hangs that happened outside the recording.
 
+Use `outputFormat: "both"` while validating workflows. In the Support Matrix, `partial` means usable rows were parsed but some schemas failed, were empty, or were skipped. `not_exportable` means Xcode exposed schemas but exported no usable rows, so do not interpret it as "no issues." If Time Profiler says it failed to parse, inspect Export Diagnostics and treat the CPU section as unavailable for that run.
+
 It can suggest:
 - `profile_running_app` with `full`, `cpu`, `memory`, `network`, or `full-ios`
 - `track_running_app` when a specific template is more appropriate
@@ -188,6 +190,7 @@ Report sections include:
 - Summary, trace path, process, preset, and recording strategy
 - Support matrix and export diagnostics
 - CPU / Time Profiler bottlenecks
+- Time Profiler parse-failure callouts when CPU samples could not be parsed
 - Leaks findings when exportable
 - Allocation metrics and churn findings when exportable
 - Network request metrics and failures when HAR/CFNetwork data is exportable
@@ -218,7 +221,8 @@ Use this for an existing `.trace` file. The parser reads `xcrun xctrace export -
 It can report:
 - Time Profiler bottlenecks, hot functions, and recommendations
 - Additional Memory, Network, Energy, Allocations, and Leaks sections when Xcode exposes usable tables
-- Clear no-data findings when a schema exists but Xcode does not export usable rows
+- Clear status when a family is `supported`, `partial`, `not_exportable`, or `unsupported`
+- A Time Profiler parse-failure message when CPU samples could not be parsed; this is an analyzer/export issue, not evidence of zero CPU work
 - Machine-readable JSON via `outputFormat: "json"` or Markdown plus JSON via `outputFormat: "both"`
 
 ### `compare_traces`

@@ -106,6 +106,8 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).toContain('"preset": "full"');
     expect(result.content[0].text).toContain('## Workflow Notes');
     expect(result.content[0].text).toContain('Default recording duration is 60s');
+    expect(result.content[0].text).toContain('partial support status means some usable data was parsed');
+    expect(result.content[0].text).toContain('Time Profiler reports a parse failure');
     expect(result.content[0].text).toContain('rerun with the exact PID as processName');
   });
 
@@ -188,6 +190,56 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain('- Slow functions: 2');
     expect(result.content[0].text).not.toContain('Slow functions (>2): 2');
+  });
+
+  it('renders Time Profiler parse failures and export diagnostics for analyze_trace', async () => {
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () =>
+        analysis({
+          stats: {
+            ...analysis().stats,
+            totalTime: 2500,
+            slowFunctions: 0,
+            avgFunctionTime: 0,
+            maxFunctionTime: 0,
+            threadCount: 0,
+            timeProfileError: 'Unexpected close tag',
+          },
+          summary: 'Time Profiler analysis failed: Unexpected close tag.',
+          supportStatus: [
+            {
+              kind: 'time-profile',
+              status: 'not_exportable',
+              reason: 'xctrace exposed time-profile schemas, but no usable rows were exported: Unexpected close tag',
+              sourceSchemas: ['time-profile'],
+            },
+          ],
+          exportAttempts: [
+            {
+              kind: 'time-profile',
+              status: 'failed',
+              schema: 'time-profile',
+              message: 'Unexpected close tag',
+            },
+          ],
+        }),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    const result = await server.callTool('analyze_trace', {
+      tracePath: '/tmp/app.trace',
+    });
+
+    const text = result.content[0].text;
+    expect(text).toContain('- Time Profiler: failed to parse - Unexpected close tag. The trace itself was recorded; this is an analyzer error.');
+    expect(text).toContain('## Export Diagnostics');
+    expect(text).toContain('- time-profile: failed - Unexpected close tag');
+    expect(text).not.toContain('- Threads used: 0');
   });
 
   it('renders a Hangs section when the analysis includes hang events', async () => {
@@ -750,6 +802,55 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).toContain('## Network');
     expect(result.content[0].text).toContain('Network failures detected');
     expect(result.content[0].text).toContain('## Prioritized Recommendations');
+  });
+
+  it('renders Time Profiler parse failures and export diagnostics in combined profile reports', async () => {
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async (tracePath) =>
+        analysis({
+          metadata: {
+            ...analysis().metadata,
+            fileName: 'MyApp-full.trace',
+            filePath: tracePath,
+          },
+          stats: {
+            ...analysis().stats,
+            slowFunctions: 0,
+            avgFunctionTime: 0,
+            maxFunctionTime: 0,
+            threadCount: 0,
+            timeProfileError: 'Unexpected close tag',
+          },
+          bottlenecks: [],
+          summary: 'Time Profiler analysis failed: Unexpected close tag.',
+          exportAttempts: [
+            {
+              kind: 'time-profile',
+              status: 'failed',
+              schema: 'time-profile',
+              message: 'Unexpected close tag',
+            },
+          ],
+        }),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    const result = await server.callTool('profile_running_app', {
+      processName: 'MyApp',
+      preset: 'cpu',
+      durationSeconds: 5,
+      outputDirectory: '/tmp/profiles',
+    });
+
+    const text = result.content[0].text;
+    expect(text).toContain('**Time Profiler:** failed to parse - Unexpected close tag. The trace itself was recorded; this is an analyzer error.');
+    expect(text).toContain('## Export Diagnostics');
+    expect(text).toContain('- time-profile: failed - Unexpected close tag');
   });
 
   it('keeps Power Profiler in the iOS combined preset and reports unsupported-instrument errors', async () => {

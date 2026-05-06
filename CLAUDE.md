@@ -38,6 +38,8 @@ Recommended workflow:
 4. Use launch mode only when startup behavior is the target. If the trace is saved but `xctrace export --toc` fails with `Document Missing Template Error`, treat the run as not exportable and retry with attach-by-PID.
 5. For hangs, record for long enough to reproduce the issue, then inspect `## Hangs`, Support Matrix, and Export Diagnostics before drawing conclusions from "no issues" summaries.
 6. If `## Hangs` reports no exported events, interpret that as trace-window scoped. It does not rule out startup or interaction hangs outside the captured window.
+7. Interpret `partial` as "some usable rows parsed" and `not_exportable` as "Xcode exposed schemas but exported no usable rows." Do not treat `not_exportable` as evidence of no issues.
+8. If Time Profiler reports "failed to parse," treat CPU samples as unavailable and inspect Export Diagnostics; the trace may still contain usable Hangs, Memory, Network, Allocations, or Leaks data.
 
 ### `profile_running_app`
 
@@ -62,6 +64,7 @@ Report contents:
 - Recording metadata and saved trace path
 - Support matrix and export diagnostics
 - CPU / Time Profiler bottlenecks
+- Time Profiler parse-failure callouts when CPU samples could not be parsed
 - Leaks findings when exportable
 - Allocation metrics and churn findings when exportable
 - Network requests/failures/transferred bytes when HAR or CFNetwork data is exportable
@@ -73,7 +76,7 @@ Use this when the user names one specific Instruments template, such as `Leaks` 
 
 ### `analyze_trace`
 
-Use this when the user already has a `.trace` file. It does not record. It can optionally symbolicate to a temporary trace with `dsymPath`, exports the trace TOC, discovers supported schemas, parses Time Profiler and supported instrument data, then returns one analysis report. Use `outputFormat: "json"` or `"both"` when callers need structured output.
+Use this when the user already has a `.trace` file. It does not record. It can optionally symbolicate to a temporary trace with `dsymPath`, exports the trace TOC, discovers supported schemas, parses Time Profiler and supported instrument data, then returns one analysis report. Use `outputFormat: "json"` or `"both"` when callers need structured output. If Time Profiler parsing fails, report it as an analyzer/export failure rather than zero CPU work.
 
 ### `compare_traces`
 
@@ -93,6 +96,8 @@ Use this for Time Profiler baseline/current regression checks. It reports total-
 - Xcode export schemas vary by Xcode version and template. Prefer TOC-driven schema discovery over hard-coded table names.
 - Network analysis should prefer HAR export when available and fall back to XML table exports.
 - Every analysis family should be reported as `supported`, `partial`, `not_exportable`, or `unsupported`; do not imply Instruments.app GUI parity.
+- Support status must come from export attempts: `supported` has successful exports, `partial` has successful exports plus failed/empty/skipped attempts, `not_exportable` has schemas but no successful exports, and `unsupported` has no matching schemas.
+- Failed Time Profiler parsing should be surfaced through `PerformanceStats.timeProfileError` and MCP Export Diagnostics, not hidden behind "0 threads" summaries.
 - Use temp output paths for XML/HAR exports and symbolication so commands do not dirty the repo or mutate source traces.
 - Real `.trace` files should stay out of git. Use ignored local directories such as `test-traces/` for manual validation.
 

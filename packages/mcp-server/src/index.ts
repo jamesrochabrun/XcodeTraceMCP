@@ -1331,6 +1331,8 @@ export class XCTraceAnalyzerServer {
     const notes = [
       'Default recording duration is 60s. Use 20-30s only for explicit startup/cold-launch checks; otherwise record long enough to reproduce the hang.',
       'Use outputFormat: "both" while validating a profiling workflow so the report includes Markdown plus structured supportStatus/exportAttempts.',
+      'A partial support status means some usable data was parsed; not_exportable means Xcode exposed schemas but exported no usable rows.',
+      'If Time Profiler reports a parse failure, treat it as an analyzer/export issue and inspect Export Diagnostics instead of reading it as zero CPU work.',
       'For already-running macOS apps, attach by PID is the most reliable path when multiple app instances are running.',
       'A clean idle attach trace does not rule out startup or interaction hangs; reproduce the problematic workflow during the recording window.',
       'If Time Profiler, Hangs, or another family reports not_exportable, inspect Export Diagnostics before drawing performance conclusions.',
@@ -1595,6 +1597,9 @@ export class XCTraceAnalyzerServer {
       lines.push('');
       lines.push(result.analysis.summary);
       lines.push('');
+      this.appendTimeProfilerStatus(lines, result.analysis);
+      this.appendSupportStatus(lines, result.analysis);
+      this.appendExportDiagnostics(lines, result.analysis);
       this.appendCpuHighlights(lines, result.analysis);
       lines.push('');
       this.appendHangsSection(lines, result.analysis);
@@ -1682,6 +1687,16 @@ export class XCTraceAnalyzerServer {
       }
       lines.push('');
     }
+  }
+
+  private appendTimeProfilerStatus(lines: string[], analysis: Analysis): void {
+    if (!analysis.stats.timeProfileError) {
+      return;
+    }
+    lines.push(
+      `**Time Profiler:** failed to parse - ${analysis.stats.timeProfileError}. The trace itself was recorded; this is an analyzer error.`
+    );
+    lines.push('');
   }
 
   private appendHangsSection(lines: string[], analysis: Analysis): void {
@@ -1893,11 +1908,17 @@ export class XCTraceAnalyzerServer {
 
     // Statistics
     lines.push('## Performance Statistics');
-    lines.push(`- Total execution time: ${(analysis.stats.totalTime / 1000).toFixed(2)}s`);
-    lines.push(`- Slow functions: ${analysis.stats.slowFunctions}`);
-    lines.push(`- Average function time: ${analysis.stats.avgFunctionTime.toFixed(2)}ms`);
-    lines.push(`- Max function time: ${analysis.stats.maxFunctionTime.toFixed(2)}ms`);
-    lines.push(`- Threads used: ${analysis.stats.threadCount}`);
+    if (analysis.stats.timeProfileError) {
+      lines.push(
+        `- Time Profiler: failed to parse - ${analysis.stats.timeProfileError}. The trace itself was recorded; this is an analyzer error.`
+      );
+    } else {
+      lines.push(`- Total execution time: ${(analysis.stats.totalTime / 1000).toFixed(2)}s`);
+      lines.push(`- Slow functions: ${analysis.stats.slowFunctions}`);
+      lines.push(`- Average function time: ${analysis.stats.avgFunctionTime.toFixed(2)}ms`);
+      lines.push(`- Max function time: ${analysis.stats.maxFunctionTime.toFixed(2)}ms`);
+      lines.push(`- Threads used: ${analysis.stats.threadCount}`);
+    }
     lines.push('');
 
     // Bottlenecks

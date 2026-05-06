@@ -254,6 +254,7 @@ export interface PerformanceStats {
   maxFunctionTime: number;
   threadCount: number;
   hotPath?: string[]; // Most expensive call path
+  timeProfileError?: string; // Time Profiler export/parse failure, when known
 }
 
 /**

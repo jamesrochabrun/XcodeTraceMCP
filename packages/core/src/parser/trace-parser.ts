@@ -825,48 +825,28 @@ export class TraceParser {
     const statuses: AnalysisSupportStatus[] = [];
     const analyses = new Map(instrumentAnalyses.map((analysis) => [analysis.kind, analysis]));
     const hasTimeProfileSchema = schemas.includes('time-profile');
+    const timeProfileAttempts = this.exportAttemptsForSupportKind('time-profile');
+    const timeProfileStatus = this.statusFromExportAttempts(
+      timeProfileAttempts,
+      hasTimeProfileSchema || !!timeProfile
+    );
 
     statuses.push({
       kind: 'time-profile',
-      status: timeProfile?.functionProfiles.length
-        ? 'supported'
-        : hasTimeProfileSchema
-          ? 'not_exportable'
-          : 'unsupported',
-      reason: timeProfile?.functionProfiles.length
-        ? 'Time Profiler samples were exported and parsed.'
-        : hasTimeProfileSchema
-          ? 'xctrace exposed Time Profiler data, but no usable rows were exported.'
-          : 'The trace TOC does not expose Time Profiler data.',
-      sourceSchemas: hasTimeProfileSchema ? ['time-profile'] : [],
+      status: timeProfileStatus,
+      reason: this.supportReason('time-profile', timeProfileStatus, timeProfileAttempts),
+      sourceSchemas: hasTimeProfileSchema || timeProfileAttempts.some((attempt) => attempt.status === 'success')
+        ? ['time-profile']
+        : [],
     });
 
     for (const kind of INSTRUMENT_ORDER) {
       const matchingSchemas = this.matchSchemasForKind(schemas, kind);
       const analysis = analyses.get(kind);
-      const noExportable = analysis?.findings.some((finding) =>
-        finding.title.startsWith('No exportable ')
-      ) ?? false;
-      const hasUsableData = !!analysis && (analysis.metrics.length > 0 || !noExportable);
-      const hasSkippedExports = this.exportAttempts.some((attempt) =>
-        attempt.kind === kind && attempt.status === 'skipped'
-      );
-
-      let status: SupportStatus;
-      let reason: string;
-      if (matchingSchemas.length === 0) {
-        status = 'unsupported';
-        reason = `The trace TOC does not expose ${kind} schemas.`;
-      } else if (hasUsableData && (noExportable || hasSkippedExports)) {
-        status = 'partial';
-        reason = `${this.instrumentSectionName(kind)} data was parsed, but some schemas were not exportable.`;
-      } else if (hasUsableData) {
-        status = 'supported';
-        reason = `${this.instrumentSectionName(kind)} data was exported and parsed.`;
-      } else {
-        status = 'not_exportable';
-        reason = `xctrace exposed ${kind} schemas, but no usable rows were exported.`;
-      }
+      const attempts = this.exportAttemptsForSupportKind(kind);
+      const hasSignal = matchingSchemas.length > 0 || !!analysis;
+      const status = this.statusFromExportAttempts(attempts, hasSignal);
+      const reason = this.supportReason(kind, status, attempts);
 
       if (analysis) {
         analysis.supportStatus = status;
@@ -881,6 +861,56 @@ export class TraceParser {
     }
 
     return statuses;
+  }
+
+  private exportAttemptsForSupportKind(kind: TraceKind): ExportAttempt[] {
+    return this.exportAttempts.filter((attempt) =>
+      attempt.kind === kind || (kind === 'network' && attempt.kind === 'har')
+    );
+  }
+
+  private statusFromExportAttempts(
+    attempts: ExportAttempt[],
+    hasSchemaOrAnalysis: boolean
+  ): SupportStatus {
+    const success = attempts.filter((attempt) => attempt.status === 'success');
+    const nonSuccess = attempts.filter((attempt) =>
+      attempt.status === 'failed' || attempt.status === 'empty' || attempt.status === 'skipped'
+    );
+
+    if (success.length > 0 && nonSuccess.length > 0) {
+      return 'partial';
+    }
+    if (success.length > 0) {
+      return 'supported';
+    }
+    if (!hasSchemaOrAnalysis) {
+      return 'unsupported';
+    }
+    return 'not_exportable';
+  }
+
+  private supportReason(
+    kind: TraceKind,
+    status: SupportStatus,
+    attempts: ExportAttempt[]
+  ): string {
+    const section = this.instrumentSectionName(kind);
+    switch (status) {
+      case 'supported':
+        return `${section} data was exported and parsed.`;
+      case 'partial':
+        return `${section} data was parsed, but some schemas failed, were empty, or were skipped.`;
+      case 'not_exportable': {
+        const failedAttempt = attempts.find((attempt) => attempt.status === 'failed' && attempt.message);
+        if (failedAttempt?.message) {
+          return `xctrace exposed ${kind} schemas, but no usable rows were exported: ${failedAttempt.message}`;
+        }
+        return `xctrace exposed ${kind} schemas, but no usable rows were exported.`;
+      }
+      case 'unsupported':
+        return `The trace TOC does not expose ${kind} schemas.`;
+    }
   }
 
   private instrumentSectionName(kind: TraceKind): string {

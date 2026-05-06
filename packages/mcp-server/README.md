@@ -66,7 +66,7 @@ Suggest the best profiling workflow before recording or analyzing anything. This
 - `durationSeconds` (optional): Preferred recording duration
 - `outputFormat` (optional): `markdown`, `json`, or `both`
 
-The response includes a recommended next tool call and alternatives for full, CPU, memory/leaks, network, existing trace analysis, and regression comparison.
+The response includes a recommended next tool call and alternatives for full, CPU, memory/leaks, network, existing trace analysis, and regression comparison. Use `outputFormat: "both"` while validating workflows so the Markdown report and structured `supportStatus` / `exportAttempts` stay visible.
 
 A user should be able to start from an app repo with a simple prompt:
 
@@ -77,6 +77,8 @@ Profile this app for hangs and CPU bottlenecks.
 For already-running macOS apps, attach by PID is usually the most reliable path, especially when multiple processes share the same name. Use launch mode when startup behavior is the target, but treat `Document Missing Template Error` from `xctrace export --toc` as a saved-but-not-exportable trace rather than a valid "no issues" result.
 
 Hang results are scoped to the captured trace window. If the report says no exported hang events were found, that does not rule out startup or interaction hangs that happened outside the recording.
+
+In the Support Matrix, `partial` means usable rows were parsed but some schemas failed, were empty, or were skipped. `not_exportable` means Xcode exposed schemas but exported no usable rows, so it is not a clean "no issues" result. If Time Profiler reports a parse failure, inspect Export Diagnostics and treat CPU samples as unavailable for that run.
 
 ### `profile_running_app`
 
@@ -105,6 +107,7 @@ Report contents:
 - Recording metadata: process, preset, duration, trace path, base template, and instruments
 - Support matrix and export diagnostics
 - CPU / Time Profiler: bottlenecks, top functions, threads, slow function count, and CPU recommendations
+- Time Profiler parse-failure callouts when CPU samples could not be parsed
 - Leaks: leak count, leaked bytes, top leak sites, and leak findings when Xcode exports usable data
 - Allocations: allocation counts, allocated bytes, top allocation sites, and churn findings when exportable
 - Network: request count, failed requests, transferred bytes, top hosts, and network failure findings when HAR/CFNetwork data is available
@@ -148,6 +151,8 @@ Analyze a single trace file for performance issues. The server auto-detects supp
 - `topN` (optional): Number of top functions to show (default: 10)
 - `dsymPath` (optional): dSYM file or directory. The server writes a temporary symbolicated trace before analysis.
 - `outputFormat` (optional): `markdown`, `json`, or `both`
+
+The report distinguishes unsupported data from non-exportable data. A Time Profiler parse failure is reported as a failed CPU analysis with Export Diagnostics; do not read it as zero CPU work.
 
 **Example with Claude:**
 ```

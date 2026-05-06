@@ -88,6 +88,30 @@ describe('PerformanceAnalyzer', () => {
     expect(analysis.summary).toContain('Document Missing Template Error');
     expect(analysis.summary).not.toContain('No significant performance bottlenecks detected');
   });
+
+  it('surfaces Time Profiler parse failures in stats and summary', () => {
+    const analysis = new PerformanceAnalyzer().analyze({
+      metadata: {
+        fileName: 'parse-failed.trace',
+        filePath: '/tmp/parse-failed.trace',
+        duration: 2500,
+        template: 'Time Profiler',
+      },
+      exportAttempts: [
+        {
+          kind: 'time-profile',
+          status: 'failed',
+          schema: 'time-profile',
+          message: 'Unexpected close tag',
+        },
+      ],
+    });
+
+    expect(analysis.stats.timeProfileError).toBe('Unexpected close tag');
+    expect(analysis.summary).toContain('Time Profiler analysis failed: Unexpected close tag');
+    expect(analysis.summary).toContain('Time Profiler totals are unavailable');
+    expect(analysis.summary).not.toContain('No significant performance bottlenecks detected');
+  });
 });
 
 describe('ComparativeAnalyzer', () => {

@@ -154,4 +154,125 @@ describe('TraceParser', () => {
       })
     );
   });
+
+  it('marks an instrument family partial when some matching schemas export and others fail', async () => {
+    const parser = new TraceParser({
+      exportTOC: async () => `
+        <trace-toc>
+          <run number="1">
+            <duration>2s</duration>
+            <data>
+              <table schema="memory-statistics"/>
+              <table schema="memory-vm-regions"/>
+            </data>
+          </run>
+        </trace-toc>
+      `,
+      exportTable: async (_tracePath, schema) => {
+        if (schema === 'memory-statistics') {
+          return `
+            <table>
+              <row>
+                <column name="Peak Memory" value="734003200"/>
+              </row>
+            </table>
+          `;
+        }
+        throw new Error('memory-vm-regions export failed');
+      },
+    });
+
+    const trace = await parser.parseTrace('packages/core/package.json');
+    const memoryStatus = trace.supportStatus?.find((status) => status.kind === 'memory');
+    const memoryAnalysis = trace.instrumentAnalyses?.find((analysis) => analysis.kind === 'memory');
+
+    expect(memoryStatus).toEqual(
+      expect.objectContaining({
+        status: 'partial',
+        reason: expect.stringContaining('some schemas failed'),
+      })
+    );
+    expect(memoryAnalysis?.supportStatus).toBe('partial');
+    expect(memoryAnalysis?.metrics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'Peak Memory', numericValue: 734003200 }),
+      ])
+    );
+    expect(memoryAnalysis?.findings).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ title: 'No exportable Memory rows' }),
+      ])
+    );
+    expect(trace.exportAttempts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'memory', status: 'success', schema: 'memory-statistics' }),
+        expect.objectContaining({ kind: 'memory', status: 'failed', schema: 'memory-vm-regions' }),
+      ])
+    );
+  });
+
+  it('marks exposed schemas not_exportable when no matching exports succeed', async () => {
+    const parser = new TraceParser({
+      exportTOC: async () => `
+        <trace-toc>
+          <run number="1">
+            <duration>2s</duration>
+            <data>
+              <table schema="leaks-summary"/>
+            </data>
+          </run>
+        </trace-toc>
+      `,
+      exportTable: async (_tracePath, schema) => {
+        if (schema === 'leaks-summary') {
+          throw new Error('leaks export failed');
+        }
+        return '';
+      },
+    });
+
+    const trace = await parser.parseTrace('packages/core/package.json');
+    const leaksStatus = trace.supportStatus?.find((status) => status.kind === 'leaks');
+    const networkStatus = trace.supportStatus?.find((status) => status.kind === 'network');
+
+    expect(leaksStatus).toEqual(
+      expect.objectContaining({
+        status: 'not_exportable',
+        reason: expect.stringContaining('leaks export failed'),
+      })
+    );
+    expect(networkStatus).toEqual(
+      expect.objectContaining({
+        status: 'unsupported',
+      })
+    );
+  });
+
+  it('marks Time Profiler not_exportable when parsing fails', async () => {
+    const parser = new TraceParser({
+      exportTOC: async () => `
+        <trace-toc>
+          <run number="1">
+            <duration>2s</duration>
+            <data>
+              <table schema="time-profile"/>
+            </data>
+          </run>
+        </trace-toc>
+      `,
+      exportTable: async () => {
+        throw new Error('invalid time-profile XML');
+      },
+    });
+
+    const trace = await parser.parseTrace('packages/core/package.json');
+
+    expect(trace.timeProfile).toBeUndefined();
+    expect(trace.supportStatus?.find((status) => status.kind === 'time-profile')).toEqual(
+      expect.objectContaining({
+        status: 'not_exportable',
+        reason: expect.stringContaining('invalid time-profile XML'),
+      })
+    );
+  });
 });

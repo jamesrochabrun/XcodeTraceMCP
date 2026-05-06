@@ -275,4 +275,87 @@ describe('TraceParser', () => {
       })
     );
   });
+
+  it('scopes Time Profiler samples and hang events to a requested time range', async () => {
+    const parser = new TraceParser({
+      exportTOC: async () => `
+        <trace-toc>
+          <run number="1">
+            <duration>2s</duration>
+            <data>
+              <table schema="time-profile"/>
+              <table schema="potential-hangs"/>
+            </data>
+          </run>
+        </trace-toc>
+      `,
+      exportTable: async (_tracePath, schema) => {
+        if (schema === 'time-profile') {
+          return `
+            <table>
+              <row time="100" thread="7" weight="10">
+                <backtrace><frame name="App\`BeforeWindow"/></backtrace>
+              </row>
+              <row time="300" thread="7" weight="40">
+                <backtrace><frame name="App\`ScopedWork"/></backtrace>
+              </row>
+              <row time="900" thread="7" weight="20">
+                <backtrace><frame name="App\`AfterWindow"/></backtrace>
+              </row>
+            </table>
+          `;
+        }
+        if (schema === 'potential-hangs') {
+          return `
+            <table>
+              <row>
+                <start-time fmt="00:00.150">150000000</start-time>
+                <duration fmt="200 ms">200000000</duration>
+                <hang-type>Hang</hang-type>
+                <thread fmt="Main Thread (App)">
+                  <tid>7</tid>
+                  <process fmt="App (123)"><pid>123</pid></process>
+                </thread>
+                <process fmt="App (123)"><pid>123</pid></process>
+              </row>
+              <row>
+                <start-time fmt="00:00.900">900000000</start-time>
+                <duration fmt="100 ms">100000000</duration>
+                <hang-type>Microhang</hang-type>
+                <thread fmt="Main Thread (App)">
+                  <tid>7</tid>
+                  <process fmt="App (123)"><pid>123</pid></process>
+                </thread>
+                <process fmt="App (123)"><pid>123</pid></process>
+              </row>
+            </table>
+          `;
+        }
+        return '';
+      },
+    });
+
+    const trace = await parser.parseTrace('packages/core/package.json', {
+      timeRangeMs: { startMs: 200, endMs: 700 },
+    });
+
+    expect(trace.timeProfile?.samples.map((sample) => sample.timestamp)).toEqual([300]);
+    expect(trace.timeProfile?.totalDuration).toBe(500);
+    expect(trace.timeProfile?.functionProfiles).toEqual([
+      expect.objectContaining({
+        name: 'ScopedWork',
+        module: 'App',
+        totalTime: 40,
+        selfTime: 40,
+      }),
+    ]);
+    expect(trace.hangs?.events).toHaveLength(1);
+    expect(trace.hangs?.events[0]).toEqual(
+      expect.objectContaining({
+        startMs: 150,
+        durationMs: 200,
+        hangType: 'Hang',
+      })
+    );
+  });
 });

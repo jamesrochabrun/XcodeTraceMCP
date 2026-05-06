@@ -12,10 +12,12 @@ import {
   AnalysisError,
 } from '../types.js';
 
+type ResolvedAnalysisOptions = Required<Omit<AnalysisOptions, 'timeRangeMs'>> & Pick<AnalysisOptions, 'timeRangeMs'>;
+
 /**
  * Default analysis options
  */
-const DEFAULT_OPTIONS: Required<AnalysisOptions> = {
+const DEFAULT_OPTIONS: ResolvedAnalysisOptions = {
   slowThreshold: 100, // 100ms
   topN: 10,
   includeRecommendations: true,
@@ -65,7 +67,7 @@ export class PerformanceAnalyzer {
   /**
    * Calculate performance statistics
    */
-  private calculateStats(trace: ParsedTrace, options: Required<AnalysisOptions>): PerformanceStats {
+  private calculateStats(trace: ParsedTrace, options: ResolvedAnalysisOptions): PerformanceStats {
     const timeProfile = trace.timeProfile;
 
     if (!timeProfile || !timeProfile.functionProfiles.length) {
@@ -73,7 +75,7 @@ export class PerformanceAnalyzer {
         attempt.kind === 'time-profile' && attempt.status === 'failed'
       );
       const stats: PerformanceStats = {
-        totalTime: trace.metadata.duration,
+        totalTime: timeProfile?.totalDuration ?? this.analysisWindowDuration(options) ?? trace.metadata.duration,
         slowFunctions: 0,
         avgFunctionTime: 0,
         maxFunctionTime: 0,
@@ -81,6 +83,9 @@ export class PerformanceAnalyzer {
       };
       if (timeProfileFailure) {
         stats.timeProfileError = timeProfileFailure.message ?? 'Time Profiler export or parsing failed.';
+      }
+      if (options.timeRangeMs) {
+        stats.timeRangeMs = options.timeRangeMs;
       }
       return stats;
     }
@@ -97,7 +102,7 @@ export class PerformanceAnalyzer {
     // Find hot path (most expensive call path)
     const hotPath = this.findHotPath(timeProfile);
 
-    return {
+    const stats: PerformanceStats = {
       totalTime: timeProfile.totalDuration,
       slowFunctions,
       avgFunctionTime: functionTimes.length > 0
@@ -109,12 +114,24 @@ export class PerformanceAnalyzer {
       threadCount: threads.size,
       hotPath,
     };
+    if (options.timeRangeMs) {
+      stats.timeRangeMs = options.timeRangeMs;
+    }
+    return stats;
+  }
+
+  private analysisWindowDuration(options: ResolvedAnalysisOptions): number | undefined {
+    const range = options.timeRangeMs;
+    if (!range) {
+      return undefined;
+    }
+    return Math.max(0, range.endMs - range.startMs);
   }
 
   /**
    * Identify performance bottlenecks
    */
-  private identifyBottlenecks(trace: ParsedTrace, options: Required<AnalysisOptions>): Bottleneck[] {
+  private identifyBottlenecks(trace: ParsedTrace, options: ResolvedAnalysisOptions): Bottleneck[] {
     const timeProfile = trace.timeProfile;
 
     if (!timeProfile || !timeProfile.functionProfiles.length) {

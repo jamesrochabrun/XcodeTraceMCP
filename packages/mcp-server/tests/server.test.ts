@@ -163,12 +163,19 @@ describe('XCTraceAnalyzerServer', () => {
     const result = await server.callTool('profile_advisor', {
       request: 'analyze this trace',
       tracePath: '/tmp/app.trace',
+      timeRangeMs: { startMs: 2000, endMs: 7000 },
       outputFormat: 'json',
     });
     const payload = JSON.parse(result.content[0].text);
 
     expect(payload.recommended.tool).toBe('analyze_trace');
     expect(payload.recommended.arguments.tracePath).toBe('/tmp/app.trace');
+    expect(payload.recommended.arguments.timeRangeMs).toEqual({ startMs: 2000, endMs: 7000 });
+    expect(payload.workflowNotes).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('rerun analyze_trace with timeRangeMs'),
+      ])
+    );
   });
 
   it('formats analysis output with clear slow function statistics', async () => {
@@ -240,6 +247,41 @@ describe('XCTraceAnalyzerServer', () => {
     expect(text).toContain('## Export Diagnostics');
     expect(text).toContain('- time-profile: failed - Unexpected close tag');
     expect(text).not.toContain('- Threads used: 0');
+  });
+
+  it('passes timeRangeMs to analyze_trace and renders the scoped analysis window', async () => {
+    let receivedOptions: unknown;
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async (_tracePath, options) => {
+        receivedOptions = options;
+        return analysis({
+          stats: {
+            ...analysis().stats,
+            totalTime: 5000,
+            timeRangeMs: { startMs: 2000, endMs: 7000 },
+          },
+          summary: 'Scoped analysis found useful data.',
+        });
+      },
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    const result = await server.callTool('analyze_trace', {
+      tracePath: '/tmp/app.trace',
+      timeRangeMs: { startMs: 2000, endMs: 7000 },
+    });
+
+    expect(receivedOptions).toEqual(
+      expect.objectContaining({
+        timeRangeMs: { startMs: 2000, endMs: 7000 },
+      })
+    );
+    expect(result.content[0].text).toContain('**Analysis window:** 00:02.000-00:07.000 (5.00 s)');
   });
 
   it('renders a Hangs section when the analysis includes hang events', async () => {

@@ -171,4 +171,29 @@ describe('analyzeTraceFile', () => {
 
     vi.doUnmock('../src/parser/trace-parser.js');
   });
+
+  it('passes timeRangeMs to the parser and keeps it in stats', async () => {
+    vi.resetModules();
+    const parseTraceMock = vi.fn(async () =>
+      parsedTrace([{ name: 'ScopedWork', selfTime: 50, totalTime: 50 }])
+    );
+    vi.doMock('../src/parser/trace-parser.js', () => ({
+      TraceParser: class {},
+      parseTrace: parseTraceMock,
+    }));
+
+    const { analyzeTraceFile } = await import('../src/index.js');
+
+    const analysis = await analyzeTraceFile('/tmp/app.trace', {
+      timeRangeMs: { startMs: 2000, endMs: 7000 },
+      includeRecommendations: false,
+    });
+
+    expect(parseTraceMock).toHaveBeenCalledWith('/tmp/app.trace', {
+      timeRangeMs: { startMs: 2000, endMs: 7000 },
+    });
+    expect(analysis.stats.timeRangeMs).toEqual({ startMs: 2000, endMs: 7000 });
+
+    vi.doUnmock('../src/parser/trace-parser.js');
+  });
 });

@@ -23,6 +23,7 @@ import {
   HangsData,
   HangEvent,
   HangType,
+  TimeRangeMs,
 } from '../types.js';
 import { exportHAR, exportTable, exportTOC, exportXPath } from '../utils/xctrace-runner.js';
 
@@ -31,6 +32,10 @@ export interface TraceExporter {
   exportTable(tracePath: string, schema: string, runNumber?: number): Promise<string>;
   exportXPath?(tracePath: string, xpath: string): Promise<string>;
   exportHAR?(tracePath: string): Promise<string>;
+}
+
+export interface TraceParserOptions {
+  timeRangeMs?: TimeRangeMs;
 }
 
 const defaultExporter: TraceExporter = {
@@ -186,7 +191,7 @@ export class TraceParser {
   /**
    * Parse a complete trace file
    */
-  async parseTrace(tracePath: string): Promise<ParsedTrace> {
+  async parseTrace(tracePath: string, options: TraceParserOptions = {}): Promise<ParsedTrace> {
     try {
       this.exportAttempts = [];
 
@@ -198,8 +203,8 @@ export class TraceParser {
         await this.extractMetadataAndSchemas(tracePath);
 
       // Parse time profile data
-      const timeProfile = await this.parseTimeProfile(tracePath, schemas, tableDescriptors);
-      const hangs = await this.parseHangs(tracePath, schemas, tableDescriptors);
+      const timeProfile = await this.parseTimeProfile(tracePath, schemas, tableDescriptors, options);
+      const hangs = await this.parseHangs(tracePath, schemas, tableDescriptors, options);
       const instrumentAnalyses = await this.parseInstrumentAnalyses(
         tracePath,
         schemas,
@@ -318,7 +323,8 @@ export class TraceParser {
   private async parseTimeProfile(
     tracePath: string,
     schemas: string[],
-    tableDescriptors: TraceTableDescriptor[]
+    tableDescriptors: TraceTableDescriptor[],
+    options: TraceParserOptions
   ): Promise<TimeProfileData | undefined> {
     if (schemas.length > 0 && !schemas.includes('time-profile')) {
       this.exportAttempts.push({
@@ -363,9 +369,8 @@ export class TraceParser {
         return undefined;
       }
 
-      // Parse rows into samples and function profiles
-      const samples: Sample[] = [];
-      const functionMap = new Map<string, FunctionProfile>();
+      // Parse rows into samples before applying any analysis window.
+      const rawSamples: Sample[] = [];
 
       // Parse table rows
       const rows = this.rowsFromTableNode(table);
@@ -376,16 +381,19 @@ export class TraceParser {
         // Extract sample data
         const sample = this.parseSampleRow(row);
         if (sample) {
-          samples.push(sample);
-
-          // Aggregate function profiles
-          this.aggregateFunctionProfiles(sample, functionMap);
+          rawSamples.push(sample);
         }
+      }
+
+      const samples = this.filterSamplesByTimeRange(rawSamples, options.timeRangeMs);
+      const functionMap = new Map<string, FunctionProfile>();
+      for (const sample of samples) {
+        this.aggregateFunctionProfiles(sample, functionMap);
       }
 
       this.exportAttempts.push({
         kind: 'time-profile',
-        status: samples.length > 0 ? 'success' : 'empty',
+        status: rawSamples.length > 0 ? 'success' : 'empty',
         schema: 'time-profile',
         xpath: descriptor?.xpath,
       });
@@ -395,9 +403,7 @@ export class TraceParser {
         .sort((a, b) => b.totalTime - a.totalTime);
 
       // Calculate total duration from samples
-      const totalDuration = samples.length > 0
-        ? Math.max(...samples.map(s => s.timestamp))
-        : 0;
+      const totalDuration = this.timeProfileTotalDuration(samples, options.timeRangeMs);
 
       return {
         totalDuration,
@@ -460,7 +466,8 @@ export class TraceParser {
   private async parseHangs(
     tracePath: string,
     schemas: string[],
-    tableDescriptors: TraceTableDescriptor[]
+    tableDescriptors: TraceTableDescriptor[],
+    options: TraceParserOptions
   ): Promise<HangsData | undefined> {
     const presentSchemas = HANG_SCHEMAS.filter((schema) => schemas.includes(schema));
     if (presentSchemas.length === 0) {
@@ -506,8 +513,9 @@ export class TraceParser {
           .map((row) => this.parseHangRow(row, schema))
           .filter((event): event is HangEvent => event !== undefined);
 
-        if (schemaEvents.length > 0) {
-          events.push(...schemaEvents);
+        const scopedEvents = this.filterHangEventsByTimeRange(schemaEvents, options.timeRangeMs);
+        if (scopedEvents.length > 0) {
+          events.push(...scopedEvents);
           sourceSchemas.push(schema);
         }
         this.exportAttempts.push({
@@ -600,6 +608,34 @@ export class TraceParser {
       longestMs,
       sourceSchemas,
     };
+  }
+
+  private filterSamplesByTimeRange(samples: Sample[], timeRangeMs?: TimeRangeMs): Sample[] {
+    if (!timeRangeMs) {
+      return samples;
+    }
+    return samples.filter((sample) =>
+      sample.timestamp >= timeRangeMs.startMs && sample.timestamp <= timeRangeMs.endMs
+    );
+  }
+
+  private filterHangEventsByTimeRange(events: HangEvent[], timeRangeMs?: TimeRangeMs): HangEvent[] {
+    if (!timeRangeMs) {
+      return events;
+    }
+    return events.filter((event) => {
+      const eventEndMs = event.startMs + event.durationMs;
+      return event.startMs <= timeRangeMs.endMs && eventEndMs >= timeRangeMs.startMs;
+    });
+  }
+
+  private timeProfileTotalDuration(samples: Sample[], timeRangeMs?: TimeRangeMs): number {
+    if (timeRangeMs) {
+      return Math.max(0, timeRangeMs.endMs - timeRangeMs.startMs);
+    }
+    return samples.length > 0
+      ? Math.max(...samples.map(s => s.timestamp))
+      : 0;
   }
 
   /**
@@ -1802,7 +1838,10 @@ export class TraceParser {
 /**
  * Convenience function to parse a trace
  */
-export async function parseTrace(tracePath: string): Promise<ParsedTrace> {
+export async function parseTrace(
+  tracePath: string,
+  options?: TraceParserOptions
+): Promise<ParsedTrace> {
   const parser = new TraceParser();
-  return parser.parseTrace(tracePath);
+  return parser.parseTrace(tracePath, options);
 }

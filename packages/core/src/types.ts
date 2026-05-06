@@ -255,6 +255,7 @@ export interface PerformanceStats {
   threadCount: number;
   hotPath?: string[]; // Most expensive call path
   timeProfileError?: string; // Time Profiler export/parse failure, when known
+  timeRangeMs?: TimeRangeMs; // Scoped analysis window, when requested
 }
 
 /**
@@ -357,6 +358,15 @@ export interface AnalysisOptions {
   topN?: number; // show top N functions, default 10
   includeRecommendations?: boolean; // default true
   minCallCount?: number; // minimum calls to consider, default 1
+  timeRangeMs?: TimeRangeMs; // restrict analysis to a trace-relative window
+}
+
+/**
+ * Trace-relative time window in milliseconds.
+ */
+export interface TimeRangeMs {
+  startMs: number;
+  endMs: number;
 }
 
 /**

@@ -34,6 +34,7 @@ import {
   Comparison,
   ComparisonOptions,
   RecordOptions,
+  TimeRangeMs,
   XCTraceCapabilities,
 } from '@xctrace-analyzer/core';
 
@@ -180,6 +181,21 @@ export class XCTraceAnalyzerServer {
               type: 'number',
               description: 'Preferred recording duration in seconds (default: 60)',
             },
+            timeRangeMs: {
+              type: 'object',
+              properties: {
+                startMs: {
+                  type: 'number',
+                  description: 'Trace-relative window start in milliseconds',
+                },
+                endMs: {
+                  type: 'number',
+                  description: 'Trace-relative window end in milliseconds',
+                },
+              },
+              required: ['startMs', 'endMs'],
+              description: 'Optional analysis window for an existing trace, useful after identifying a hang interval.',
+            },
             outputFormat: {
               type: 'string',
               enum: ['markdown', 'json', 'both'],
@@ -210,6 +226,21 @@ export class XCTraceAnalyzerServer {
             dsymPath: {
               type: 'string',
               description: 'Optional dSYM path or directory. The server symbolicates to a temporary trace before analysis.',
+            },
+            timeRangeMs: {
+              type: 'object',
+              properties: {
+                startMs: {
+                  type: 'number',
+                  description: 'Trace-relative window start in milliseconds',
+                },
+                endMs: {
+                  type: 'number',
+                  description: 'Trace-relative window end in milliseconds',
+                },
+              },
+              required: ['startMs', 'endMs'],
+              description: 'Restrict analysis to a trace-relative window. Useful for asking what ran during a specific hang.',
             },
             outputFormat: {
               type: 'string',
@@ -515,6 +546,7 @@ export class XCTraceAnalyzerServer {
     const request = this.optionalString(args?.request, 'request') ?? 'Profile my app';
     const duration = this.optionalPositiveNumber(args?.durationSeconds, 'durationSeconds') ?? 60;
     const platform = this.optionalString(args?.platform, 'platform') ?? 'unknown';
+    const timeRangeMs = this.optionalTimeRangeMs(args?.timeRangeMs);
     if (!['macos', 'ios', 'unknown'].includes(platform)) {
       throw new Error('platform must be macos, ios, or unknown');
     }
@@ -531,6 +563,7 @@ export class XCTraceAnalyzerServer {
       duration,
       platform,
       target,
+      ...(timeRangeMs ? { timeRangeMs } : {}),
     });
     const workflowNotes = this.advisorWorkflowNotes(target);
 
@@ -565,6 +598,7 @@ export class XCTraceAnalyzerServer {
     const { slowThreshold, topN } = args;
     const tracePath = this.requiredString(args?.tracePath, 'tracePath');
     const outputFormat = this.outputFormat(args);
+    const timeRangeMs = this.optionalTimeRangeMs(args?.timeRangeMs);
     const preparedTracePath = await this.prepareTraceForAnalysis(
       tracePath,
       this.optionalString(args?.dsymPath, 'dsymPath')
@@ -574,6 +608,7 @@ export class XCTraceAnalyzerServer {
       slowThreshold,
       topN,
       includeRecommendations: true,
+      ...(timeRangeMs ? { timeRangeMs } : {}),
     };
 
     const analysis = await this.deps.analyzeTraceFile(preparedTracePath, options);
@@ -948,6 +983,36 @@ export class XCTraceAnalyzerServer {
     return value;
   }
 
+  private optionalTimeRangeMs(value: unknown): TimeRangeMs | undefined {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('timeRangeMs must be an object with startMs and endMs numbers');
+    }
+
+    const range = value as { startMs?: unknown; endMs?: unknown };
+    if (
+      typeof range.startMs !== 'number' ||
+      typeof range.endMs !== 'number' ||
+      !Number.isFinite(range.startMs) ||
+      !Number.isFinite(range.endMs)
+    ) {
+      throw new Error('timeRangeMs.startMs and timeRangeMs.endMs must be finite numbers');
+    }
+    if (range.startMs < 0) {
+      throw new Error('timeRangeMs.startMs must be greater than or equal to 0');
+    }
+    if (range.endMs <= range.startMs) {
+      throw new Error('timeRangeMs.endMs must be greater than timeRangeMs.startMs');
+    }
+
+    return {
+      startMs: range.startMs,
+      endMs: range.endMs,
+    };
+  }
+
   private outputFormat(args: any): OutputFormat {
     const value = this.optionalString(args?.outputFormat, 'outputFormat') ?? 'markdown';
     if (value !== 'markdown' && value !== 'json' && value !== 'both') {
@@ -1221,6 +1286,7 @@ export class XCTraceAnalyzerServer {
     duration: number;
     platform: string;
     target: { mode: string; label: string; args: Record<string, unknown> };
+    timeRangeMs?: TimeRangeMs;
   }): Array<{
     label: string;
     when: string;
@@ -1287,6 +1353,7 @@ export class XCTraceAnalyzerServer {
         tool: 'analyze_trace',
         arguments: {
           tracePath: input.args?.tracePath ?? '<path/to/app.trace>',
+          ...(input.timeRangeMs ? { timeRangeMs: input.timeRangeMs } : {}),
           outputFormat: 'both',
         },
       },
@@ -1333,6 +1400,7 @@ export class XCTraceAnalyzerServer {
       'Use outputFormat: "both" while validating a profiling workflow so the report includes Markdown plus structured supportStatus/exportAttempts.',
       'A partial support status means some usable data was parsed; not_exportable means Xcode exposed schemas but exported no usable rows.',
       'If Time Profiler reports a parse failure, treat it as an analyzer/export issue and inspect Export Diagnostics instead of reading it as zero CPU work.',
+      'After identifying a hang start/duration, rerun analyze_trace with timeRangeMs around that interval to scope CPU samples and hang events to the problem window.',
       'For already-running macOS apps, attach by PID is the most reliable path when multiple app instances are running.',
       'A clean idle attach trace does not rule out startup or interaction hangs; reproduce the problematic workflow during the recording window.',
       'If Time Profiler, Hangs, or another family reports not_exportable, inspect Export Diagnostics before drawing performance conclusions.',
@@ -1597,6 +1665,7 @@ export class XCTraceAnalyzerServer {
       lines.push('');
       lines.push(result.analysis.summary);
       lines.push('');
+      this.appendAnalysisWindow(lines, result.analysis);
       this.appendTimeProfilerStatus(lines, result.analysis);
       this.appendSupportStatus(lines, result.analysis);
       this.appendExportDiagnostics(lines, result.analysis);
@@ -1695,6 +1764,17 @@ export class XCTraceAnalyzerServer {
     }
     lines.push(
       `**Time Profiler:** failed to parse - ${analysis.stats.timeProfileError}. The trace itself was recorded; this is an analyzer error.`
+    );
+    lines.push('');
+  }
+
+  private appendAnalysisWindow(lines: string[], analysis: Analysis): void {
+    const range = analysis.stats.timeRangeMs;
+    if (!range) {
+      return;
+    }
+    lines.push(
+      `**Analysis window:** ${formatHangStartTime(range.startMs)}-${formatHangStartTime(range.endMs)} (${formatHangDuration(range.endMs - range.startMs)})`
     );
     lines.push('');
   }
@@ -1895,6 +1975,12 @@ export class XCTraceAnalyzerServer {
     lines.push(`**File:** ${analysis.metadata.fileName}`);
     lines.push(`**Duration:** ${(analysis.stats.totalTime / 1000).toFixed(2)}s`);
     lines.push(`**Template:** ${analysis.metadata.template}`);
+    if (analysis.stats.timeRangeMs) {
+      const range = analysis.stats.timeRangeMs;
+      lines.push(
+        `**Analysis window:** ${formatHangStartTime(range.startMs)}-${formatHangStartTime(range.endMs)} (${formatHangDuration(range.endMs - range.startMs)})`
+      );
+    }
     lines.push('');
 
     // Summary

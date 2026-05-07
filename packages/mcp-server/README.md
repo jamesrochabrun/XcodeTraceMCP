@@ -4,7 +4,7 @@
 
 This MCP server provides AI assistants like Claude with the ability to automate headless `xcrun xctrace` workflows: record traces, symbolicate traces, export TOC/XML/HAR data, detect Time Profiler bottlenecks, summarize exportable Memory/Network/Energy/Allocations/Leaks data, identify Time Profiler regressions, and provide actionable recommendations.
 
-It is an **honest headless companion** for Instruments.app, not a complete GUI replacement. Any template or view that `xctrace` cannot export is reported as unsupported or not exportable.
+It is an **honest Instruments companion**, not a complete GUI replacement. Recording tools open the saved `.trace` in Instruments.app by default, and any template or view that `xctrace` cannot export is reported as unsupported or not exportable.
 
 ## Features
 
@@ -85,6 +85,7 @@ Record a running app once with a profiling preset and return one combined report
 - `device` (optional): Device or simulator name/UDID
 - `outputDirectory` (optional): Directory where generated `.trace` files should be saved (default: `test-traces`)
 - `analyze` (optional): Analyze after recording (default: true)
+- `openInInstruments` (optional): Open the saved `.trace` in Instruments.app after recording (default: true). Set false for CI or headless runs.
 - `outputFormat` (optional): `markdown`, `json`, or `both` (default: `markdown`)
 
 Preset recordings:
@@ -96,7 +97,7 @@ Preset recordings:
 - `energy`: Power Profiler. This is for iOS/iPadOS targets; Xcode reports it as unsupported for macOS recordings.
 
 Report contents:
-- Recording metadata: process, preset, duration, trace path, base template, and instruments
+- Recording metadata: process, preset, duration, trace path, base template, instruments, and Instruments.app open status
 - Support matrix and export diagnostics
 - CPU / Time Profiler: bottlenecks, top functions, threads, slow function count, and CPU recommendations
 - Top User-Code Frames: app-attributed CPU frames from Time Profiler samples
@@ -125,6 +126,7 @@ Attach to a running process with `xcrun xctrace record`, save the generated `.tr
 - `outputDirectory` (optional): Directory where the `.trace` file should be saved (default: `test-traces`)
 - `outputPath` (optional): Exact output `.trace` path. Overrides `outputDirectory`
 - `analyze` (optional): Analyze after recording (default: true)
+- `openInInstruments` (optional): Open the saved `.trace` in Instruments.app after recording (default: true). Set false for CI or headless runs.
 - `outputFormat` (optional): `markdown`, `json`, or `both` (default: `markdown`)
 
 **Example with Claude:**
@@ -133,6 +135,8 @@ Track MyApp for leaks for 60 seconds on the iPhone 16 Pro Simulator
 ```
 
 Use this tool when the user names a template. For broad profiling, prefer `profile_running_app`.
+
+If Leaks, Allocations, or another analysis family is `not_exportable`, the trace may still show a GUI track in Instruments.app while `xcrun export --toc` exposes no exportable table schema. Use the opened Instruments trace to verify that GUI-only data.
 
 ### `analyze_trace`
 

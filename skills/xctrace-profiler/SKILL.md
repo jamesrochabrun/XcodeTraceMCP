@@ -56,6 +56,7 @@ Be the user-facing profiler for xctrace-analyzer. Users should ask in plain lang
 
 4. Run with diagnostics.
    - Use `outputFormat: "both"` while validating or when the result needs follow-up decisions.
+   - Recording tools open the saved `.trace` in Instruments.app by default with `openInInstruments: true`; pass `false` only for CI or headless automation.
    - Use `durationSeconds: 60` by default; use 20-30 seconds only for explicit startup checks or longer when the repro needs it.
    - Use temp or ignored output locations such as `test-traces/`; do not commit `.trace` files.
    - Use `check_xctrace`, `list_templates`, or `list_devices` only for setup, device selection, or troubleshooting.
@@ -64,8 +65,10 @@ Be the user-facing profiler for xctrace-analyzer. Users should ask in plain lang
    - `supported`: usable exported rows were parsed.
    - `partial`: usable rows were parsed, but other schemas failed, were empty, or were skipped.
    - `not_exportable`: Xcode exposed schemas but no usable rows were exported; this is unavailable data, not "no issues."
+   - `not_exportable` may also mean the GUI track exists in Instruments.app but `xcrun export --toc` does not expose an exportable table schema.
    - `unsupported`: no matching schema was present.
    - If Time Profiler failed to parse, CPU attribution is unavailable for that run; inspect Export Diagnostics.
+   - If Leaks, Allocations, Memory, Network, or Energy are `unsupported` / `not_exportable`, say the automated MCP report cannot validate that area and use the opened Instruments trace for GUI verification.
 
 6. Follow up when needed.
    - For hangs, choose the longest Severe Hang, otherwise the longest Hang. Rerun `analyze_trace` on the saved trace with `timeRangeMs`: `startMs = max(0, hang.startMs - 500)`, `endMs = hang.startMs + hang.durationMs + 500`.
@@ -80,5 +83,6 @@ Keep the final answer short and actionable:
 - Trace path and recording target.
 - What was supported, partial, not exportable, or unsupported.
 - Key findings for the requested concern: CPU, hangs, user-code frames, leaks, allocations, network, energy, or regression.
+- Whether Instruments.app opened for GUI verification.
 - Concrete source areas to inspect next.
 - Any Export Diagnostics caveat that changes confidence.

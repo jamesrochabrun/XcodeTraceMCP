@@ -248,6 +248,55 @@ describe('TraceParser', () => {
     );
   });
 
+  it('marks GUI-only instrument tracks not_exportable when xctrace exposes no table schema', async () => {
+    const parser = new TraceParser({
+      exportTOC: async () => `
+        <trace-toc>
+          <run number="1">
+            <duration>2s</duration>
+            <data>
+              <table schema="time-profile"/>
+            </data>
+            <instruments>
+              <instrument name="Leaks"/>
+              <instrument name="Allocations"/>
+            </instruments>
+            <tracks>
+              <track name="Leaks">
+                <detail kind="table" name="Leaks"/>
+              </track>
+              <track name="Allocations">
+                <detail kind="table" name="Allocations List"/>
+              </track>
+            </tracks>
+          </run>
+        </trace-toc>
+      `,
+      exportTable: async () => '',
+    });
+
+    const trace = await parser.parseTrace('packages/core/package.json');
+    const leaksStatus = trace.supportStatus?.find((status) => status.kind === 'leaks');
+    const allocationsStatus = trace.supportStatus?.find((status) => status.kind === 'allocations');
+
+    expect(leaksStatus).toEqual(
+      expect.objectContaining({
+        status: 'not_exportable',
+        reason: expect.stringContaining('visible in Instruments.app'),
+        sourceSchemas: [],
+        sourceTracks: ['Leaks'],
+      })
+    );
+    expect(allocationsStatus).toEqual(
+      expect.objectContaining({
+        status: 'not_exportable',
+        reason: expect.stringContaining('xcrun did not expose an exportable allocations table schema'),
+        sourceSchemas: [],
+        sourceTracks: ['Allocations', 'Allocations List'],
+      })
+    );
+  });
+
   it('marks Time Profiler not_exportable when parsing fails', async () => {
     const parser = new TraceParser({
       exportTOC: async () => `

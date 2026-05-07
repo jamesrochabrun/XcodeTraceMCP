@@ -199,7 +199,7 @@ export class TraceParser {
       await this.validateTraceFile(tracePath);
 
       // Get metadata and table schemas
-      const { metadata, schemas, tableDescriptors } =
+      const { metadata, schemas, tableDescriptors, guiTrackNamesByKind } =
         await this.extractMetadataAndSchemas(tracePath);
 
       // Parse time profile data
@@ -210,7 +210,12 @@ export class TraceParser {
         schemas,
         tableDescriptors
       );
-      const supportStatus = this.buildSupportStatus(schemas, timeProfile, instrumentAnalyses);
+      const supportStatus = this.buildSupportStatus(
+        schemas,
+        timeProfile,
+        instrumentAnalyses,
+        guiTrackNamesByKind
+      );
 
       return {
         metadata,
@@ -258,6 +263,7 @@ export class TraceParser {
     metadata: TraceMetadata;
     schemas: string[];
     tableDescriptors: TraceTableDescriptor[];
+    guiTrackNamesByKind: Partial<Record<InstrumentKind, string[]>>;
   }> {
     try {
       const tocXML = await this.exporter.exportTOC(tracePath);
@@ -265,6 +271,7 @@ export class TraceParser {
       const schemas = this.extractSchemas(tocData);
       const tableDescriptors = this.extractTableDescriptors(tocData);
       const userProcessNames = this.extractUserProcessNames(tocData);
+      const guiTrackNamesByKind = this.extractGuiTrackNamesByKind(tocData);
       this.exportAttempts.push({
         kind: 'toc',
         status: schemas.length > 0 ? 'success' : 'empty',
@@ -300,7 +307,7 @@ export class TraceParser {
         metadata.duration = this.parseDuration(run.duration);
       }
 
-      return { metadata, schemas, tableDescriptors };
+      return { metadata, schemas, tableDescriptors, guiTrackNamesByKind };
     } catch (error) {
       this.exportAttempts.push({
         kind: 'toc',
@@ -317,6 +324,7 @@ export class TraceParser {
         },
         schemas: [],
         tableDescriptors: [],
+        guiTrackNamesByKind: {},
       };
     }
   }
@@ -845,7 +853,8 @@ export class TraceParser {
   private buildSupportStatus(
     schemas: string[],
     timeProfile: TimeProfileData | undefined,
-    instrumentAnalyses: InstrumentAnalysis[]
+    instrumentAnalyses: InstrumentAnalysis[],
+    guiTrackNamesByKind: Partial<Record<InstrumentKind, string[]>> = {}
   ): AnalysisSupportStatus[] {
     const tocFailure = this.exportAttempts.find((attempt) =>
       attempt.kind === 'toc' && attempt.status === 'failed'
@@ -884,9 +893,10 @@ export class TraceParser {
       const matchingSchemas = this.matchSchemasForKind(schemas, kind);
       const analysis = analyses.get(kind);
       const attempts = this.exportAttemptsForSupportKind(kind);
-      const hasSignal = matchingSchemas.length > 0 || !!analysis;
+      const sourceTracks = guiTrackNamesByKind[kind] ?? [];
+      const hasSignal = matchingSchemas.length > 0 || !!analysis || sourceTracks.length > 0;
       const status = this.statusFromExportAttempts(attempts, hasSignal);
-      const reason = this.supportReason(kind, status, attempts);
+      const reason = this.supportReason(kind, status, attempts, sourceTracks);
 
       if (analysis) {
         analysis.supportStatus = status;
@@ -897,6 +907,7 @@ export class TraceParser {
         status,
         reason,
         sourceSchemas: analysis?.sourceSchemas ?? matchingSchemas,
+        ...(sourceTracks.length > 0 ? { sourceTracks } : {}),
       });
     }
 
@@ -933,7 +944,8 @@ export class TraceParser {
   private supportReason(
     kind: TraceKind,
     status: SupportStatus,
-    attempts: ExportAttempt[]
+    attempts: ExportAttempt[],
+    sourceTracks: string[] = []
   ): string {
     const section = this.instrumentSectionName(kind);
     switch (status) {
@@ -945,6 +957,9 @@ export class TraceParser {
         const failedAttempt = attempts.find((attempt) => attempt.status === 'failed' && attempt.message);
         if (failedAttempt?.message) {
           return `xctrace exposed ${kind} schemas, but no usable rows were exported: ${failedAttempt.message}`;
+        }
+        if (sourceTracks.length > 0) {
+          return `${section} is visible in Instruments.app (${sourceTracks.join(', ')}), but xcrun did not expose an exportable ${kind} table schema. Open the trace in Instruments.app to inspect it.`;
         }
         return `xctrace exposed ${kind} schemas, but no usable rows were exported.`;
       }
@@ -1204,6 +1219,52 @@ export class TraceParser {
 
     visit(tocData);
     return Array.from(schemas);
+  }
+
+  private extractGuiTrackNamesByKind(tocData: any): Partial<Record<InstrumentKind, string[]>> {
+    const namesByKind: Partial<Record<InstrumentKind, Set<string>>> = {};
+
+    const addName = (name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) {
+        return;
+      }
+
+      for (const kind of INSTRUMENT_ORDER) {
+        if (SCHEMA_PATTERNS[kind].some((pattern) => pattern.test(trimmed))) {
+          namesByKind[kind] ??= new Set<string>();
+          namesByKind[kind]!.add(trimmed);
+        }
+      }
+    };
+
+    const visit = (node: any, keyName?: string) => {
+      if (!node || typeof node !== 'object') {
+        return;
+      }
+
+      if (keyName === 'instrument' || keyName === 'track' || keyName === 'detail') {
+        const name = this.nodeName(node);
+        if (name) {
+          addName(name);
+        }
+      }
+
+      for (const [key, value] of Object.entries(node)) {
+        if (key.startsWith('@_')) {
+          continue;
+        }
+        for (const child of this.arrayOf(value)) {
+          visit(child, key);
+        }
+      }
+    };
+
+    visit(tocData);
+
+    return Object.fromEntries(
+      Object.entries(namesByKind).map(([kind, names]) => [kind, Array.from(names)])
+    ) as Partial<Record<InstrumentKind, string[]>>;
   }
 
   private extractUserProcessNames(tocData: any): string[] {

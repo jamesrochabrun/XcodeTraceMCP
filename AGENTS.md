@@ -1,6 +1,6 @@
 # Agent Guide
 
-This repository contains a local Model Context Protocol (MCP) server for headless Xcode Instruments profiling. Treat it as an honest `xcrun xctrace` companion, not a replacement for Instruments.app. The server records, symbolicates, exports, parses, and analyzes what Apple exposes through `xctrace`, then reports unsupported or non-exportable data explicitly.
+This repository contains a local Model Context Protocol (MCP) server for Xcode Instruments profiling. Treat it as an honest `xcrun xctrace` companion, not a replacement for Instruments.app. The server records, opens saved traces in Instruments.app by default, symbolicates, exports, parses, and analyzes what Apple exposes through `xctrace`, then reports unsupported or non-exportable data explicitly.
 
 ## Project Architecture
 
@@ -55,9 +55,11 @@ Recommended workflow:
 5. For hangs, record for long enough to reproduce the issue, then inspect `## Hangs`, Support Matrix, and Export Diagnostics before drawing conclusions from "no issues" summaries.
 6. If `## Hangs` reports no exported events, interpret that as trace-window scoped. It does not rule out startup or interaction hangs outside the captured window.
 7. Interpret `partial` as "some usable rows parsed" and `not_exportable` as "Xcode exposed schemas but exported no usable rows." Do not treat `not_exportable` as evidence of no issues.
+   `not_exportable` can also mean the Instruments.app GUI track exists but `xcrun export --toc` exposes no table schema for it.
 8. If Time Profiler reports "failed to parse," treat CPU samples as unavailable and inspect Export Diagnostics; the trace may still contain usable Hangs, Memory, Network, Allocations, or Leaks data.
 9. After identifying a hang start and duration, rerun `analyze_trace` with `timeRangeMs: { startMs, endMs }` around that interval to answer "what ran during the hang?"
 10. Use `## Top User-Code Frames` to answer "which of my code was slow?" Pass `userBinaryHints` if module names do not match the process names discovered from the TOC.
+11. Recording tools open saved traces in Instruments.app by default. Use `openInInstruments: false` only for CI or headless automation.
 
 ### `profile_running_app`
 
@@ -112,9 +114,11 @@ Use this for Time Profiler baseline/current regression checks. It reports total-
 - macOS Power Profiler is not supported by Xcode; use `full` for macOS and `full-ios` or `energy` for iOS/iPadOS targets.
 - Do not run separate `xctrace record` sessions in parallel for full profiling. They can contend for kperf/ktrace locks. Use the combined recording path in `profile_running_app`.
 - `xctrace` can save malformed or partial traces even when recording exits nonzero. Surface the underlying `xctrace` stderr/stdout details in reports.
+- `profile_running_app` and `track_running_app` should open the saved `.trace` in Instruments.app by default after recording; report the open status, but never treat an open failure as a recording failure.
 - Xcode export schemas vary by Xcode version and template. Prefer TOC-driven schema discovery over hard-coded table names.
 - Network analysis should prefer HAR export when available and fall back to XML table exports.
 - Every analysis family should be reported as `supported`, `partial`, `not_exportable`, or `unsupported`; do not imply Instruments.app GUI parity.
+- GUI-only instrument tracks such as Leaks should be treated as `not_exportable` when they appear in the TOC but have no exportable table schema.
 - Support status must come from export attempts: `supported` has successful exports, `partial` has successful exports plus failed/empty/skipped attempts, `not_exportable` has schemas but no successful exports, and `unsupported` has no matching schemas.
 - Failed Time Profiler parsing should be surfaced through `PerformanceStats.timeProfileError` and MCP Export Diagnostics, not hidden behind "0 threads" summaries.
 - `timeRangeMs` is trace-relative milliseconds. Filter Time Profiler samples before aggregation and include hang events that overlap the window. It scopes analysis; it does not mutate or crop the source `.trace`.

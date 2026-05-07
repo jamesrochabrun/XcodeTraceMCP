@@ -8,6 +8,7 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { execFile as execFileCallback } from 'child_process';
 import { mkdir, mkdtemp } from 'fs/promises';
 import { tmpdir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
@@ -48,6 +49,19 @@ export interface XCTraceAnalyzerDependencies {
   getXCTraceCapabilities?: typeof defaultGetXCTraceCapabilities;
   recordTrace: typeof defaultRecordTrace;
   symbolicateTrace?: typeof defaultSymbolicateTrace;
+  openTrace?: (tracePath: string) => Promise<void>;
+}
+
+function defaultOpenTrace(tracePath: string): Promise<void> {
+  return new Promise((resolveOpen, rejectOpen) => {
+    execFileCallback('open', [tracePath], (error) => {
+      if (error) {
+        rejectOpen(error);
+        return;
+      }
+      resolveOpen();
+    });
+  });
 }
 
 const defaultDependencies: XCTraceAnalyzerDependencies = {
@@ -60,6 +74,7 @@ const defaultDependencies: XCTraceAnalyzerDependencies = {
   getXCTraceCapabilities: defaultGetXCTraceCapabilities,
   recordTrace: defaultRecordTrace,
   symbolicateTrace: defaultSymbolicateTrace,
+  openTrace: defaultOpenTrace,
 };
 
 const passthroughJsonSchemaValidator: jsonSchemaValidator = {
@@ -92,11 +107,17 @@ const PROFILE_PRESETS: Record<string, ProfilePreset> = {
 interface ProfileTraceResult {
   template: string;
   tracePath: string;
+  instrumentsOpen?: InstrumentsOpenResult;
   analysis?: Analysis;
   error?: string;
 }
 
 type OutputFormat = 'markdown' | 'json' | 'both';
+
+interface InstrumentsOpenResult {
+  status: 'opened' | 'failed';
+  error?: string;
+}
 
 /**
  * MCP Server for Xcode Instruments trace analysis
@@ -297,6 +318,10 @@ export class XCTraceAnalyzerServer {
               type: 'boolean',
               description: 'Analyze the trace after recording (default: true)',
             },
+            openInInstruments: {
+              type: 'boolean',
+              description: 'Open the saved .trace in Instruments.app after recording (default: true). Set false for CI or headless runs.',
+            },
             outputFormat: {
               type: 'string',
               enum: ['markdown', 'json', 'both'],
@@ -379,6 +404,10 @@ export class XCTraceAnalyzerServer {
             analyze: {
               type: 'boolean',
               description: 'Analyze traces after recording (default: true)',
+            },
+            openInInstruments: {
+              type: 'boolean',
+              description: 'Open the saved .trace in Instruments.app after recording (default: true). Set false for CI or headless runs.',
             },
             outputFormat: {
               type: 'string',
@@ -586,6 +615,7 @@ export class XCTraceAnalyzerServer {
     const duration = this.optionalPositiveNumber(args?.durationSeconds, 'durationSeconds') ?? 60;
     const outputFormat = this.outputFormat(args);
     const outputPath = this.traceOutputPath(args, target.fileLabel, template);
+    const openInInstruments = this.optionalBoolean(args?.openInInstruments, 'openInInstruments') ?? true;
 
     await mkdir(dirname(outputPath), { recursive: true });
 
@@ -600,6 +630,7 @@ export class XCTraceAnalyzerServer {
     };
 
     await this.deps.recordTrace(recordOptions);
+    const instrumentsOpen = await this.openTraceInInstruments(outputPath, openInInstruments);
 
     const lines = this.formatTrackingHeader({
       target: target.reportLabel,
@@ -607,6 +638,7 @@ export class XCTraceAnalyzerServer {
       duration,
       device: recordOptions.device,
       outputPath,
+      instrumentsOpen,
       workflowWarnings: target.workflowWarnings,
     });
 
@@ -624,6 +656,7 @@ export class XCTraceAnalyzerServer {
                   template,
                   duration,
                   outputPath,
+                  instrumentsOpen,
                   workflowWarnings: target.workflowWarnings,
                 },
                 analysis: null,
@@ -659,6 +692,7 @@ export class XCTraceAnalyzerServer {
                 template,
                 duration,
                 outputPath,
+                instrumentsOpen,
                 workflowWarnings: target.workflowWarnings,
               },
               ...this.structuredAnalysis(analysis),
@@ -686,6 +720,7 @@ export class XCTraceAnalyzerServer {
       ? this.requiredString(args.device, 'device')
       : undefined;
     const analyze = args?.analyze !== false;
+    const openInInstruments = this.optionalBoolean(args?.openInInstruments, 'openInInstruments') ?? true;
     const startedAt = new Date().toISOString().replace(/[:.]/g, '-');
     const results: ProfileTraceResult[] = [];
     const capabilityWarnings = await this.profileCapabilityWarnings(profilePreset);
@@ -709,6 +744,7 @@ export class XCTraceAnalyzerServer {
         outputPath,
         ...(device ? { device } : {}),
       });
+      const instrumentsOpen = await this.openTraceInInstruments(outputPath, openInInstruments);
 
       const analysis = analyze
         ? await this.deps.analyzeTraceFile(outputPath, {
@@ -719,7 +755,7 @@ export class XCTraceAnalyzerServer {
         })
         : undefined;
 
-      results.push({ template: profilePreset.template, tracePath: outputPath, analysis });
+      results.push({ template: profilePreset.template, tracePath: outputPath, instrumentsOpen, analysis });
     } catch (error) {
       results.push({
         template: profilePreset.template,
@@ -756,6 +792,7 @@ export class XCTraceAnalyzerServer {
         results: results.map((result) => ({
           template: result.template,
           tracePath: result.tracePath,
+          instrumentsOpen: result.instrumentsOpen,
           error: result.error,
           analysis: result.analysis ? this.structuredAnalysis(result.analysis) : undefined,
         })),
@@ -1057,6 +1094,35 @@ export class XCTraceAnalyzerServer {
     return value as Record<string, string>;
   }
 
+  private optionalBoolean(value: unknown, fieldName: string): boolean | undefined {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+    if (typeof value !== 'boolean') {
+      throw new Error(`${fieldName} must be a boolean`);
+    }
+    return value;
+  }
+
+  private async openTraceInInstruments(
+    tracePath: string,
+    shouldOpen: boolean
+  ): Promise<InstrumentsOpenResult | undefined> {
+    if (!shouldOpen || !this.deps.openTrace) {
+      return undefined;
+    }
+
+    try {
+      await this.deps.openTrace(tracePath);
+      return { status: 'opened' };
+    } catch (error) {
+      return {
+        status: 'failed',
+        error: (error as Error).message,
+      };
+    }
+  }
+
   private async fallbackCapabilities(): Promise<XCTraceCapabilities> {
     const available = await this.deps.isXCTraceAvailable();
     if (!available) {
@@ -1178,6 +1244,7 @@ export class XCTraceAnalyzerServer {
     duration: number;
     device?: string;
     outputPath: string;
+    instrumentsOpen?: InstrumentsOpenResult;
     workflowWarnings: string[];
   }): string[] {
     const lines = [
@@ -1193,6 +1260,10 @@ export class XCTraceAnalyzerServer {
     }
 
     lines.push(`- Trace: ${recording.outputPath}`);
+    const instrumentsLine = this.formatInstrumentsOpenLine(recording.instrumentsOpen);
+    if (instrumentsLine) {
+      lines.push(instrumentsLine);
+    }
     lines.push('');
     if (recording.workflowWarnings.length > 0) {
       lines.push('## Workflow Warnings');
@@ -1200,6 +1271,16 @@ export class XCTraceAnalyzerServer {
       lines.push('');
     }
     return lines;
+  }
+
+  private formatInstrumentsOpenLine(result?: InstrumentsOpenResult): string | undefined {
+    if (!result) {
+      return undefined;
+    }
+    if (result.status === 'opened') {
+      return '- Instruments.app: opened';
+    }
+    return `- Instruments.app: failed to open - ${result.error ?? 'unknown error'}`;
   }
 
   private formatProfileReport(profile: {
@@ -1266,7 +1347,10 @@ export class XCTraceAnalyzerServer {
 
     lines.push('## Trace Files');
     for (const result of profile.results) {
-      lines.push(`- ${result.template}: ${result.tracePath}`);
+      const openSuffix = result.instrumentsOpen?.status === 'opened'
+        ? ' (opened in Instruments.app)'
+        : '';
+      lines.push(`- ${result.template}: ${result.tracePath}${openSuffix}`);
     }
     lines.push('');
 
@@ -1274,6 +1358,10 @@ export class XCTraceAnalyzerServer {
       lines.push(`## ${this.profileSectionTitle(result.template)}`);
       lines.push(`- Template: ${result.template}`);
       lines.push(`- Trace: ${result.tracePath}`);
+      const instrumentsLine = this.formatInstrumentsOpenLine(result.instrumentsOpen);
+      if (instrumentsLine) {
+        lines.push(instrumentsLine);
+      }
       if (profile.instruments.length > 0) {
         lines.push(`- Instruments: ${profile.instruments.join(', ')}`);
       }

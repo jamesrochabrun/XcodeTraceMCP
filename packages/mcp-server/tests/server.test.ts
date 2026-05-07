@@ -560,6 +560,7 @@ describe('XCTraceAnalyzerServer', () => {
 
   it('records a running app and analyzes the captured trace', async () => {
     let recordOptions: RecordOptions | undefined;
+    const openedTraces: string[] = [];
 
     const server = new XCTraceAnalyzerServer({
       analyzeTraceFile: async (tracePath) =>
@@ -595,6 +596,9 @@ describe('XCTraceAnalyzerServer', () => {
       recordTrace: async (options) => {
         recordOptions = options;
       },
+      openTrace: async (tracePath) => {
+        openedTraces.push(tracePath);
+      },
     });
 
     const result = await server.callTool('track_running_app', {
@@ -612,11 +616,13 @@ describe('XCTraceAnalyzerServer', () => {
       device: 'iPhone 16 Pro Simulator',
       outputPath: '/tmp/MyApp-leaks.trace',
     });
+    expect(openedTraces).toEqual(['/tmp/MyApp-leaks.trace']);
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain('# Running App Trace Report');
     expect(result.content[0].text).toContain('- Target: attach: MyApp');
     expect(result.content[0].text).toContain('- Template: Leaks');
     expect(result.content[0].text).toContain('- Trace: /tmp/MyApp-leaks.trace');
+    expect(result.content[0].text).toContain('- Instruments.app: opened');
     expect(result.content[0].text).toContain('## Workflow Warnings');
     expect(result.content[0].text).toContain('not a PID');
     expect(result.content[0].text).toContain('### Leaks Analysis');
@@ -625,6 +631,7 @@ describe('XCTraceAnalyzerServer', () => {
 
   it('records a launched target with arguments and environment', async () => {
     let recordOptions: RecordOptions | undefined;
+    const openedTraces: string[] = [];
 
     const server = new XCTraceAnalyzerServer({
       analyzeTraceFile: async () => analysis(),
@@ -636,6 +643,9 @@ describe('XCTraceAnalyzerServer', () => {
       recordTrace: async (options) => {
         recordOptions = options;
       },
+      openTrace: async (tracePath) => {
+        openedTraces.push(tracePath);
+      },
     });
 
     const result = await server.callTool('track_running_app', {
@@ -646,6 +656,7 @@ describe('XCTraceAnalyzerServer', () => {
       template: 'Allocations',
       durationSeconds: 5,
       outputPath: '/tmp/MyTool.trace',
+      openInInstruments: false,
       analyze: false,
     });
 
@@ -659,14 +670,45 @@ describe('XCTraceAnalyzerServer', () => {
       duration: 5,
       outputPath: '/tmp/MyTool.trace',
     });
+    expect(openedTraces).toEqual([]);
     expect(result.content[0].text).toContain('- Target: launch: /tmp/MyTool');
+    expect(result.content[0].text).not.toContain('Instruments.app: opened');
     expect(result.content[0].text).toContain('## Workflow Warnings');
     expect(result.content[0].text).toContain('startup/cold-launch behavior');
     expect(result.content[0].text).toContain('Analysis skipped.');
   });
 
+  it('reports Instruments.app open failures without failing the recording', async () => {
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () => analysis(),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+      openTrace: async () => {
+        throw new Error('LaunchServices denied open');
+      },
+    });
+
+    const result = await server.callTool('track_running_app', {
+      processName: '123',
+      template: 'Leaks',
+      outputPath: '/tmp/MyApp-leaks.trace',
+      analyze: false,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain(
+      '- Instruments.app: failed to open - LaunchServices denied open'
+    );
+    expect(result.content[0].text).toContain('Analysis skipped.');
+  });
+
   it('profiles a running app with the full preset and returns one combined report', async () => {
     const recordOptions: RecordOptions[] = [];
+    const openedTraces: string[] = [];
 
     const server = new XCTraceAnalyzerServer({
       analyzeTraceFile: async (tracePath) =>
@@ -716,6 +758,9 @@ describe('XCTraceAnalyzerServer', () => {
       recordTrace: async (options) => {
         recordOptions.push(options);
       },
+      openTrace: async (tracePath) => {
+        openedTraces.push(tracePath);
+      },
     });
 
     const result = await server.callTool('profile_running_app', {
@@ -734,6 +779,8 @@ describe('XCTraceAnalyzerServer', () => {
         outputPath: expect.stringContaining('/tmp/profiles/MyApp-full-'),
       }),
     ]);
+    expect(openedTraces).toHaveLength(1);
+    expect(openedTraces[0]).toContain('/tmp/profiles/MyApp-full-');
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain('# Profiling Report');
     expect(result.content[0].text).toContain('- Target: attach: MyApp');
@@ -744,6 +791,7 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).toContain('- Recording strategy: combined');
     expect(result.content[0].text).toContain('- Base template: Time Profiler');
     expect(result.content[0].text).toContain('- Instruments: Leaks, Allocations, HTTP Traffic');
+    expect(result.content[0].text).toContain('- Instruments.app: opened');
     expect(result.content[0].text).toContain('## CPU / Time Profiler');
     expect(result.content[0].text).toContain('ImageProcessor.resize');
     expect(result.content[0].text).toContain('## Leaks');

@@ -4,7 +4,7 @@
 
 Ask Claude to record and analyze Xcode Instruments traces, detect Time Profiler regressions, and get actionable optimization recommendations through a local MCP server.
 
-This project is a **headless Instruments companion**, not a full replacement for Instruments.app. It automates the parts Apple exposes through `xcrun xctrace`: recording, TOC/XML/HAR export, symbolication, parsing, reports, and regression checks. When a template or Instruments view is not exportable, the server reports that limitation instead of inventing data.
+This project is an **Instruments companion**, not a full replacement for Instruments.app. It automates the parts Apple exposes through `xcrun xctrace`: recording, TOC/XML/HAR export, symbolication, parsing, reports, and regression checks. Recording tools open the saved `.trace` in Instruments.app by default so unsupported or non-exportable areas can be verified in the GUI. When a template or Instruments view is not exportable, the server reports that limitation instead of inventing data.
 
 ---
 
@@ -138,7 +138,7 @@ Claude: [Lists all templates on your system]
 ## Features
 
 - 🔍 **Automatic bottleneck detection** - Finds slow functions, calculates impact
-- 🎥 **Automated recording** - Attach to a running app, capture a trace, and analyze it in one MCP call
+- 🎥 **Automated recording** - Attach to a running app, capture a trace, open it in Instruments.app by default, and analyze it in one MCP call
 - 🧭 **Multi-instrument analysis** - Auto-detects Memory, Network, Energy, Allocations, and Leaks data
 - 🧊 **Hang-focused workflow** - Captures hang events, scopes follow-up analysis to the hang window, and attributes samples to app code
 - 📊 **Regression analysis** - Compare builds to catch performance issues
@@ -148,7 +148,7 @@ Claude: [Lists all templates on your system]
 
 ## Supported Scope
 
-This repository is a local, repo-installable MCP server. `profile_running_app` can attach to a process, launch a target, or record all processes with one combined `xcrun xctrace record` session, save the `.trace`, and analyze it. `track_running_app` records one specific template. `analyze_trace` auto-detects Time Profiler, Memory, Network, Energy, Allocations, and Leaks data exported by `xcrun xctrace`; each area is reported as supported, partial, not exportable, or unsupported. Existing traces can be scoped with `timeRangeMs` to answer "what ran during this hang window?" without re-recording, and Top User-Code Frames attribute Time Profiler samples to app binaries instead of system frames. If Time Profiler export or parsing fails, the report says it failed to parse instead of presenting zero-thread CPU data as a valid result. `compare_traces` remains focused on Time Profiler regressions. Public npm publishing, a standalone CLI, and full Instruments.app GUI parity are out of scope for the current internal production target.
+This repository is a local, repo-installable MCP server. `profile_running_app` can attach to a process, launch a target, or record all processes with one combined `xcrun xctrace record` session, save the `.trace`, open it in Instruments.app by default, and analyze it. `track_running_app` records one specific template and also opens the saved trace by default. `analyze_trace` auto-detects Time Profiler, Memory, Network, Energy, Allocations, and Leaks data exported by `xcrun xctrace`; each area is reported as supported, partial, not exportable, or unsupported. If a GUI track such as Leaks is visible in Instruments.app but `xcrun export --toc` exposes no exportable table schema, the report marks that family as `not_exportable`, not as "no issues." Existing traces can be scoped with `timeRangeMs` to answer "what ran during this hang window?" without re-recording, and Top User-Code Frames attribute Time Profiler samples to app binaries instead of system frames. If Time Profiler export or parsing fails, the report says it failed to parse instead of presenting zero-thread CPU data as a valid result. `compare_traces` remains focused on Time Profiler regressions. Public npm publishing, a standalone CLI, and full Instruments.app GUI parity are out of scope for the current internal production target.
 
 ---
 
@@ -188,7 +188,7 @@ Best default tool when a user says "start profiling", "record performance", or "
 It performs one `xcrun xctrace record` call. For the macOS `full` preset, it uses `Time Profiler` as the base template and adds `Leaks`, `Allocations`, and `HTTP Traffic` as Instruments. A `durationSeconds` value of `60` means one 60-second recording, plus save/export/analyze time.
 
 Report sections include:
-- Summary, trace path, process, preset, and recording strategy
+- Summary, trace path, process, preset, recording strategy, and whether Instruments.app opened
 - Support matrix and export diagnostics
 - CPU / Time Profiler bottlenecks
 - Top User-Code Frames for app-attributed CPU work
@@ -206,9 +206,13 @@ Presets:
 - `network`: Time Profiler + HTTP Traffic
 - `energy`: Power Profiler only; intended for iOS/iPadOS targets
 
+`profile_running_app` opens the saved trace in Instruments.app by default after recording. Pass `openInInstruments: false` for CI or headless automation.
+
 ### `track_running_app`
 
 Use this when the user wants a specific Instruments template rather than a full preset. It records one trace with the requested template, then optionally analyzes it. It supports attach, launch, and all-processes targets; `processName` remains the attach shorthand.
+
+`track_running_app` opens the saved trace in Instruments.app by default after recording. Pass `openInInstruments: false` for CI or headless automation.
 
 Common templates:
 - `Leaks` for memory leak checks

@@ -181,6 +181,7 @@ export interface AnalysisSupportStatus {
   status: SupportStatus;
   reason: string;
   sourceSchemas: string[];
+  sourceTracks?: string[];
 }
 
 /**

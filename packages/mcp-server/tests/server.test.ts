@@ -105,6 +105,7 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).toContain('"processName": "MyApp"');
     expect(result.content[0].text).toContain('"preset": "full"');
     expect(result.content[0].text).toContain('## Workflow Notes');
+    expect(result.content[0].text).toContain('Users should be able to ask simple prompts');
     expect(result.content[0].text).toContain('Default recording duration is 60s');
     expect(result.content[0].text).toContain('partial support status means some usable data was parsed');
     expect(result.content[0].text).toContain('Time Profiler reports a parse failure');

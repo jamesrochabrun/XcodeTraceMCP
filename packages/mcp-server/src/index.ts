@@ -144,7 +144,7 @@ export class XCTraceAnalyzerServer {
     return [
       {
         name: 'profile_advisor',
-        description: 'Use first for vague profiling requests like "profile my app"; suggests the best recording or analysis workflow and exact next tool calls',
+        description: 'Agent-facing planning tool for vague profiling requests like "profile my app"; suggests the best recording or analysis workflow and exact next tool calls',
         inputSchema: {
           type: 'object',
           properties: {
@@ -302,7 +302,7 @@ export class XCTraceAnalyzerServer {
       },
       {
         name: 'track_running_app',
-        description: 'Record one explicit Instruments template. Use this when the user names a template such as Leaks or Allocations; for broad hangs/CPU profiling prefer profile_advisor or profile_running_app.',
+        description: 'Record one explicit Instruments template. Use this when the user names a template such as Leaks or Allocations; for broad hangs/CPU profiling prefer the bundled skill or profile_running_app.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1436,6 +1436,7 @@ export class XCTraceAnalyzerServer {
     label: string;
   }): string[] {
     const notes = [
+      'This advisor is for agent planning. Users should be able to ask simple prompts like "Profile this app for hangs" without knowing MCP JSON or tool names.',
       'Default recording duration is 60s. Use 20-30s only for explicit startup/cold-launch checks; otherwise record long enough to reproduce the hang.',
       'Use outputFormat: "both" while validating a profiling workflow so the report includes Markdown plus structured supportStatus/exportAttempts.',
       'A partial support status means some usable data was parsed; not_exportable means Xcode exposed schemas but exported no usable rows.',

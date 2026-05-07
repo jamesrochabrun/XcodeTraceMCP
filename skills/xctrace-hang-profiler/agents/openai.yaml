@@ -1,0 +1,4 @@
+interface:
+  display_name: "Xcode Hang Profiler"
+  short_description: "Profile hangs and app code with xctrace."
+  default_prompt: "Profile this app for hangs and tell me which of my code is responsible."

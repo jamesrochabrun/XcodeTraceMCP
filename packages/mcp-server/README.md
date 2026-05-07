@@ -46,10 +46,23 @@ pnpm verify
 
 ## Available Tools
 
-## Tool Selection Guide
+### Recommended User Experience
+
+For human-facing use, register the bundled skill at [`../../skills/xctrace-hang-profiler`](../../skills/xctrace-hang-profiler/SKILL.md) in clients that support skills. Then users can stay at the prompt level:
+
+```text
+Profile this app for hangs.
+Profile this app for hangs and tell me which of my code is responsible.
+Launch this app and profile startup hangs.
+Analyze this trace and tell me what app code was slow during the hang.
+```
+
+The skill uses this MCP server underneath. It calls `profile_advisor` as an internal planning tool, records or analyzes with structured diagnostics enabled, and follows up with a `timeRangeMs` analysis around the longest hang so `## Top User-Code Frames` answers which app-owned code was running.
+
+### Tool Selection Guide
 
 - Use `profile_running_app` for "start profiling", "full report", or "record all issues" requests against an already-running app.
-- Use `profile_advisor` first when the request is vague and the user needs to choose what kind of profiling to run.
+- Use `profile_advisor` first when an agent or integration needs to choose what kind of profiling to run. End users should not need to know this tool exists.
 - Use `track_running_app` for a single explicit Instruments template such as Leaks or Allocations.
 - Use `analyze_trace` when the user already has a `.trace` file, especially for scoped follow-up analysis with `timeRangeMs` and app attribution via Top User-Code Frames.
 - Use `compare_traces` when the user asks whether a current build regressed against a baseline.
@@ -57,7 +70,7 @@ pnpm verify
 
 ### `profile_advisor`
 
-Suggest the best profiling workflow before recording or analyzing anything. This is the best first tool for requests like "profile my app", "what can we inspect?", or "I don't know which Instruments template to use."
+Suggest the best profiling workflow before recording or analyzing anything. This is an agent-facing planning tool for requests like "profile my app", "what can we inspect?", or "I don't know which Instruments template to use." For users, prefer the bundled `xctrace-hang-profiler` skill and simple prompts.
 
 **Parameters:**
 - `request` (optional): Natural-language profiling goal
@@ -73,7 +86,7 @@ The response includes a recommended next tool call and alternatives for full, CP
 A user should be able to start from an app repo with a simple prompt:
 
 ```text
-Profile this app for hangs and CPU bottlenecks.
+Profile this app for hangs.
 ```
 
 For already-running macOS apps, attach by PID is usually the most reliable path, especially when multiple processes share the same name. Use launch mode when startup behavior is the target, but treat `Document Missing Template Error` from `xctrace export --toc` as a saved-but-not-exportable trace rather than a valid "no issues" result.

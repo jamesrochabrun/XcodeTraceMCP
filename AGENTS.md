@@ -20,34 +20,35 @@ High-level flow:
 
 ## User-Facing Skill
 
-This repo includes a bundled skill at `skills/xctrace-hang-profiler`. Use it as the primary human-facing entry point for hangs, freezes, startup slowness, and "which of my code is slow?" requests.
+This repo includes a bundled skill at `skills/xctrace-profiler`. Use it as the primary human-facing entry point for profiling, trace analysis, hangs, CPU bottlenecks, leaks, allocations, network, energy, startup slowness, and trace comparisons.
 
 Users should be able to say simple prompts like:
 
 ```text
+Profile this app.
+Find why this app is slow.
 Profile this app for hangs.
 Profile this app for hangs and tell me which of my code is responsible.
+Check this build for leaks and allocation churn.
+Analyze network activity.
 Launch this app and profile startup hangs.
-Analyze this trace and tell me what app code was slow during the hang.
+Analyze this trace.
+Compare these two traces.
 ```
 
-The skill should hide MCP JSON and tool names. It uses `profile_advisor` internally, records or analyzes with `outputFormat: "both"`, reads Support Matrix / Export Diagnostics, then reruns `analyze_trace` with `timeRangeMs` around the longest hang so `## Top User-Code Frames` answers the app-owned code question.
+The skill should hide MCP JSON and tool names. It is the planning layer. It chooses between `profile_running_app`, `track_running_app`, `analyze_trace`, `compare_traces`, `check_xctrace`, `list_templates`, and `list_devices`, records or analyzes with `outputFormat: "both"` when diagnostics matter, reads Support Matrix / Export Diagnostics, and can rerun `analyze_trace` with `timeRangeMs` around the longest hang so `## Top User-Code Frames` answers the app-owned code question.
 
 ## MCP Tools
-
-### `profile_advisor`
-
-Use this first as an agent-facing planning tool when the user says something vague like "profile my app", "let's profile", or "what can we inspect?" It suggests the best workflow and returns exact next tool-call arguments for `profile_running_app`, `track_running_app`, `analyze_trace`, or `compare_traces`. Do not require users to know or invoke this tool directly; prefer the bundled skill for the conversational entry point.
 
 When driving the MCP from another app repository, a user should be able to start with a simple prompt:
 
 ```text
-Profile this app for hangs.
+Profile this app.
 ```
 
 Recommended workflow:
 
-1. For normal user prompts, use the bundled `xctrace-hang-profiler` skill. Inside that skill or another integration, use `profile_advisor` for vague requests.
+1. For normal user prompts, use the bundled `xctrace-profiler` skill as the planning layer.
 2. If the app is already running, prefer `profile_running_app` with a PID in `processName`, especially when several processes share the same name.
 3. Use `outputFormat: "both"` while validating a workflow so the response includes Markdown plus structured `supportStatus` and `exportAttempts`.
 4. Use launch mode only when startup behavior is the target. If the trace is saved but `xctrace export --toc` fails with `Document Missing Template Error`, treat the run as not exportable and retry with attach-by-PID.

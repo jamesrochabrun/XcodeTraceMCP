@@ -71,21 +71,25 @@ Add to `~/.config/claude/config.json`:
 
 ## Recommended User Experience
 
-For clients that support skills, register the bundled skill at [`skills/xctrace-hang-profiler`](./skills/xctrace-hang-profiler/SKILL.md). Once the skill is available, users can start from normal language:
+For clients that support skills, register the bundled skill at [`skills/xctrace-profiler`](./skills/xctrace-profiler/SKILL.md). Once the skill is available, users can start from normal language:
 
 ```text
-Profile this app for hangs.
+Profile this app.
 ```
 
 Useful prompts:
 
 ```text
+Find why this app is slow.
 Profile this app for hangs and tell me which of my code is responsible.
+Check this build for leaks and allocation churn.
+Analyze network activity.
 Launch this app and profile startup hangs.
-Analyze this trace and tell me what app code was slow during the hang.
+Analyze this trace.
+Compare these two traces.
 ```
 
-The skill hides the MCP choreography. It chooses the target, calls `profile_advisor` as an internal planning step, records or analyzes with `outputFormat: "both"`, and reruns `analyze_trace` with `timeRangeMs` around the longest hang so the final answer names app-owned code from `## Top User-Code Frames`.
+The skill is the user-facing planner. It chooses the target, selects the recording or analysis workflow, records or analyzes with `outputFormat: "both"` when diagnostics matter, and can rerun `analyze_trace` with `timeRangeMs` around a hang so the final answer names app-owned code from `## Top User-Code Frames`.
 
 Use the raw MCP tools directly only when building another integration, test, or scripted workflow.
 
@@ -94,12 +98,12 @@ Use the raw MCP tools directly only when building another integration, test, or 
 ## Usage
 
 ```
-You: Profile this app for hangs.
+You: Profile this app.
 
-Claude: I'll profile the app, capture the hang window, and report the app-owned code responsible.
+Claude: I'll choose the profiling workflow, record or analyze the trace, and report the app-owned code responsible.
 ```
 
-**That's it.** Claude can now profile hangs, analyze traces, detect regressions, and suggest optimizations.
+**That's it.** Claude can now profile apps, analyze traces, detect regressions, and suggest optimizations.
 
 ---
 
@@ -167,7 +171,6 @@ console.log(analysis.recommendations);
 MCP server exposing the core library to AI assistants.
 
 **Tools:**
-- `profile_advisor` - Agent-facing helper for vague requests like "profile my app"; suggests the best workflow and exact next MCP tool call. The bundled skill uses this internally so users do not need to know the tool name.
 - `profile_running_app` - Run one combined profiling recording against a running app and return one report. For macOS, the default `full` preset records Time Profiler with Leaks, Allocations, and HTTP Traffic instruments. Use `full-ios` when profiling iOS/iPadOS and you want Power Profiler too.
 - `track_running_app` - Attach to a running app, capture a trace, and optionally analyze it immediately
 - `analyze_trace` - Analyze Time Profiler bottlenecks plus supported Memory, Network, Energy, Allocations, and Leaks data; supports optional dSYM symbolication, time-window scoping, user-code frame attribution, and JSON output
@@ -177,28 +180,6 @@ MCP server exposing the core library to AI assistants.
 ---
 
 ## MCP Tool Reference
-
-### `profile_advisor`
-
-Use this first from an agent or integration when the request is vague, such as "profile my app" or "what can we inspect?" It infers the likely intent, checks local `xctrace` capabilities, and returns a recommended tool call plus alternatives.
-
-For end users, prefer the bundled `xctrace-hang-profiler` skill. A user should be able to start from an app repo with a simple prompt:
-
-```text
-Profile this app for hangs.
-```
-
-For reliable validation, prefer attach-by-PID for already-running macOS apps. Launch mode is useful for startup-specific issues, but some Xcode/macOS combinations can save a `.trace` that later fails `xctrace export --toc` with `Document Missing Template Error`; treat that as a malformed or partial trace, not as a clean "no issues" result.
-
-Hang results are scoped to the captured trace window. If the report says no exported hang events were found, that does not rule out startup or interaction hangs that happened outside the recording.
-
-Use `outputFormat: "both"` while validating workflows. In the Support Matrix, `partial` means usable rows were parsed but some schemas failed, were empty, or were skipped. `not_exportable` means Xcode exposed schemas but exported no usable rows, so do not interpret it as "no issues." If Time Profiler says it failed to parse, inspect Export Diagnostics and treat the CPU section as unavailable for that run. After the `## Hangs` section identifies a start time and duration, rerun `analyze_trace` with `timeRangeMs` around that interval to scope CPU samples and hang events to the problematic window. Use `## Top User-Code Frames` for the app-owned functions in that window; pass `userBinaryHints` when module names do not match the process name.
-
-It can suggest:
-- `profile_running_app` with `full`, `cpu`, `memory`, `network`, or `full-ios`
-- `track_running_app` when a specific template is more appropriate
-- `analyze_trace` for an existing `.trace`
-- `compare_traces` for baseline/current regression checks
 
 ### `profile_running_app`
 
@@ -282,7 +263,7 @@ Use this for Time Profiler regression checks between a baseline and current trac
 
 ## Documentation
 
-- [Bundled Xcode Hang Profiler Skill](./skills/xctrace-hang-profiler/SKILL.md)
+- [Bundled Xcode Trace Profiler Skill](./skills/xctrace-profiler/SKILL.md)
 - [Core Library Documentation](./packages/core/README.md)
 - [MCP Server Documentation](./packages/mcp-server/README.md)
 - [Research & Architecture](./MCP_RESEARCH_AND_ARCHITECTURE.md) - Deep dive into design decisions

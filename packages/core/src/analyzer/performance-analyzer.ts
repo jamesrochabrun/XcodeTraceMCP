@@ -285,11 +285,14 @@ export class PerformanceAnalyzer {
   ): { name: string; module?: string } | undefined {
     for (let i = backtrace.length - 1; i >= 0; i--) {
       const frame = this.parseFrameName(backtrace[i]);
-      if (!frame.module) {
+      if (frame.module) {
+        const module = frame.module.toLowerCase();
+        if (userBinaryNames.some((name) => module.includes(name))) {
+          return frame;
+        }
         continue;
       }
-      const module = frame.module.toLowerCase();
-      if (userBinaryNames.some((name) => module.includes(name))) {
+      if (this.isLikelyUserSwiftFrame(frame.name)) {
         return frame;
       }
     }
@@ -305,6 +308,49 @@ export class PerformanceAnalyzer {
       };
     }
     return { name: fullName };
+  }
+
+  private isLikelyUserSwiftFrame(name: string): boolean {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      return false;
+    }
+
+    const lower = trimmed.toLowerCase();
+    const systemPatterns = [
+      /^_/,
+      /^cf_/,
+      /^objc_/,
+      /^swift::/,
+      /^swift_/,
+      /^newjson/,
+      /^partial apply/,
+      /^thunk for/,
+      /^completeTaskWithClosure/i,
+      /^protocol witness/,
+      /^merged/,
+      /dispatch/,
+      /foundation/,
+      /swiftui/,
+      /appkit/,
+      /uikit/,
+      /corefoundation/,
+      /nsjson/,
+      /jsonvalue/,
+      /jsonobject/,
+      /jsonstring/,
+      /stringguts/,
+      /substring\._/,
+    ];
+    if (systemPatterns.some((pattern) => pattern.test(lower))) {
+      return false;
+    }
+
+    // xctrace sometimes exports Swift application frames without a binary
+    // prefix, for example "closure #1 in MyService.load()". Keep these
+    // visible so hang-window attribution does not disappear behind system
+    // JSON/CF/Swift runtime frames.
+    return /[A-Z][A-Za-z0-9_]*(Service|ViewModel|View|Controller|Manager|Store|Provider|Client|Repository|Coordinator|Monitor|Session|Model)\b/.test(trimmed);
   }
 
   /**

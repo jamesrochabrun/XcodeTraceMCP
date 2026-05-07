@@ -241,6 +241,51 @@ describe('PerformanceAnalyzer', () => {
       }),
     ]);
   });
+
+  it('attributes unqualified Swift app frames when xctrace omits the module name', () => {
+    const analysis = new PerformanceAnalyzer().analyze(
+      {
+        metadata: {
+          fileName: 'hang.trace',
+          filePath: '/tmp/hang.trace',
+          duration: 1000,
+          template: 'Time Profiler',
+          processName: 'AgentHub',
+        },
+        timeProfile: {
+          totalDuration: 1000,
+          samples: [
+            {
+              timestamp: 533,
+              threadId: 1,
+              weight: 50,
+              backtrace: [
+                '__CFFromUTF8',
+                'newJSONValue',
+                'newJSONObject',
+                '-[_NSJSONReader parseData:options:error:]',
+                'closure #1 in CLISessionMonitorService.readSessionMetadataBatch(_:)',
+                'partial apply for closure #1 in CLISessionMonitorService.readSessionMetadataBatch(_:)',
+                'thunk for @escaping @isolated(any) @callee_guaranteed @async () -> (@out A)',
+                'completeTaskWithClosure(swift::AsyncContext*, swift::SwiftError*)',
+              ],
+            },
+          ],
+          functionProfiles: [],
+        },
+      },
+      { topN: 5 }
+    );
+
+    expect(analysis.userFrameProfiles).toEqual([
+      expect.objectContaining({
+        module: undefined,
+        name: 'closure #1 in CLISessionMonitorService.readSessionMetadataBatch(_:)',
+        selfTime: 50,
+        sampleCount: 1,
+      }),
+    ]);
+  });
 });
 
 describe('ComparativeAnalyzer', () => {

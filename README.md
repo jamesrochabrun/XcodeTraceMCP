@@ -4,7 +4,7 @@
 
 Ask Claude to record and analyze Xcode Instruments traces, detect Time Profiler regressions, and get actionable optimization recommendations through a local MCP server.
 
-This project is an **Instruments companion**, not a full replacement for Instruments.app. It automates the parts Apple exposes through `xcrun xctrace`: recording, TOC/XML/HAR export, symbolication, parsing, reports, and regression checks. Recording tools open the saved `.trace` in Instruments.app by default so unsupported or non-exportable areas can be verified in the GUI. When a template or Instruments view is not exportable, the server reports that limitation instead of inventing data.
+This project is an **Instruments companion**, not a full replacement for Instruments.app. It automates the parts Apple exposes through `xcrun xctrace`: recording, TOC/XML/HAR export, symbolication, parsing, reports, regression checks, and safe trace cleanup. Recording tools open the saved `.trace` in Instruments.app by default so unsupported or non-exportable areas can be verified in the GUI. When a template or Instruments view is not exportable, the server reports that limitation instead of inventing data.
 
 ---
 
@@ -87,9 +87,10 @@ Analyze network activity.
 Launch this app and profile startup hangs.
 Analyze this trace.
 Compare these two traces.
+Clean up profiling traces when we are done.
 ```
 
-The skill is the user-facing planner. It chooses the target, selects the recording or analysis workflow, records or analyzes with `outputFormat: "both"` when diagnostics matter, and can rerun `analyze_trace` with `timeRangeMs` around a hang so the final answer names app-owned code from `## Top User-Code Frames`.
+The skill is the user-facing planner. It chooses the target, selects the recording or analysis workflow, records or analyzes with `outputFormat: "both"` when diagnostics matter, can rerun `analyze_trace` with `timeRangeMs` around a hang so the final answer names app-owned code from `## Top User-Code Frames`, and offers `cleanup_traces` once the saved trace is no longer needed.
 
 Use the raw MCP tools directly only when building another integration, test, or scripted workflow.
 
@@ -145,10 +146,11 @@ Claude: [Lists all templates on your system]
 - 💡 **Smart recommendations** - Pattern-based suggestions with Swift code examples
 - 🤖 **Natural language interface** - Just ask Claude in plain English
 - 🧾 **Honest diagnostics** - Reports support status, export attempts, and non-exportable data
+- 🧹 **Safe trace cleanup** - Preview or delete `.trace` bundles after the user is done inspecting them
 
 ## Supported Scope
 
-This repository is a local, repo-installable MCP server. `profile_running_app` can attach to a process, launch a target, or record all processes with one combined `xcrun xctrace record` session, save the `.trace`, open it in Instruments.app by default, and analyze it. `track_running_app` records one specific template and also opens the saved trace by default. `analyze_trace` auto-detects Time Profiler, Memory, Network, Energy, Allocations, and Leaks data exported by `xcrun xctrace`; each area is reported as supported, partial, not exportable, or unsupported. If a GUI track such as Leaks is visible in Instruments.app but `xcrun export --toc` exposes no exportable table schema, the report marks that family as `not_exportable`, not as "no issues." Existing traces can be scoped with `timeRangeMs` to answer "what ran during this hang window?" without re-recording, and Top User-Code Frames attribute Time Profiler samples to app binaries instead of system frames. If Time Profiler export or parsing fails, the report says it failed to parse instead of presenting zero-thread CPU data as a valid result. `compare_traces` remains focused on Time Profiler regressions. Public npm publishing, a standalone CLI, and full Instruments.app GUI parity are out of scope for the current internal production target.
+This repository is a local, repo-installable MCP server. `profile_running_app` can attach to a process, launch a target, or record all processes with one combined `xcrun xctrace record` session, save the `.trace`, open it in Instruments.app by default, and analyze it. `track_running_app` records one specific template and also opens the saved trace by default. Recorded traces are retained so users can inspect them in Instruments.app; `cleanup_traces` previews or deletes `.trace` bundles after the user confirms they are no longer needed. `analyze_trace` auto-detects Time Profiler, Memory, Network, Energy, Allocations, and Leaks data exported by `xcrun xctrace`; each area is reported as supported, partial, not exportable, or unsupported. If a GUI track such as Leaks is visible in Instruments.app but `xcrun export --toc` exposes no exportable table schema, the report marks that family as `not_exportable`, not as "no issues." Existing traces can be scoped with `timeRangeMs` to answer "what ran during this hang window?" without re-recording, and Top User-Code Frames attribute Time Profiler samples to app binaries instead of system frames. If Time Profiler export or parsing fails, the report says it failed to parse instead of presenting zero-thread CPU data as a valid result. `compare_traces` remains focused on Time Profiler regressions. Public npm publishing, a standalone CLI, and full Instruments.app GUI parity are out of scope for the current internal production target.
 
 ---
 
@@ -175,6 +177,7 @@ MCP server exposing the core library to AI assistants.
 - `track_running_app` - Attach to a running app, capture a trace, and optionally analyze it immediately
 - `analyze_trace` - Analyze Time Profiler bottlenecks plus supported Memory, Network, Energy, Allocations, and Leaks data; supports optional dSYM symbolication, time-window scoping, user-code frame attribution, and JSON output
 - `compare_traces` - Detect Time Profiler regressions between builds; supports optional dSYM symbolication and JSON output
+- `cleanup_traces` - Preview or delete generated `.trace` bundles after inspection
 - `list_templates`, `list_devices`, `check_xctrace`
 
 ---
@@ -206,13 +209,13 @@ Presets:
 - `network`: Time Profiler + HTTP Traffic
 - `energy`: Power Profiler only; intended for iOS/iPadOS targets
 
-`profile_running_app` opens the saved trace in Instruments.app by default after recording. Pass `openInInstruments: false` for CI or headless automation.
+`profile_running_app` opens the saved trace in Instruments.app by default after recording. Pass `openInInstruments: false` for CI or headless automation. The report keeps the trace path visible and reminds agents to use `cleanup_traces` after the user is done with the trace.
 
 ### `track_running_app`
 
 Use this when the user wants a specific Instruments template rather than a full preset. It records one trace with the requested template, then optionally analyzes it. It supports attach, launch, and all-processes targets; `processName` remains the attach shorthand.
 
-`track_running_app` opens the saved trace in Instruments.app by default after recording. Pass `openInInstruments: false` for CI or headless automation.
+`track_running_app` opens the saved trace in Instruments.app by default after recording. Pass `openInInstruments: false` for CI or headless automation. The report keeps the trace path visible and reminds agents to use `cleanup_traces` after the user is done with the trace.
 
 Common templates:
 - `Leaks` for memory leak checks
@@ -247,6 +250,24 @@ Example scoped follow-up after a hang starts near 2 seconds and lasts about 5 se
 ### `compare_traces`
 
 Use this for Time Profiler regression checks between a baseline and current trace. It compares total time and function-level deltas, then can mark the MCP call as an error when `failOnRegression` is true.
+
+### `cleanup_traces`
+
+Use this after a profiling session when the user has finished inspecting the saved `.trace` in Instruments.app. The tool only acts on paths ending in `.trace`.
+
+Safe defaults:
+- `dryRun` defaults to `true`, so the first call previews what would be deleted.
+- Exact `tracePaths` can be deleted with `dryRun: false` after confirmation.
+- Directory cleanup requires `olderThanMinutes` when `dryRun: false`; this avoids accidentally deleting every trace in a folder.
+
+Example after a report:
+
+```json
+{
+  "tracePaths": ["/path/to/MyApp-full.trace"],
+  "dryRun": false
+}
+```
 
 ### Discovery And Health Tools
 

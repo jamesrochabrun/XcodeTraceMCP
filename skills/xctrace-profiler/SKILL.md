@@ -1,6 +1,6 @@
 ---
 name: xctrace-profiler
-description: Profile Xcode/macOS/iOS apps and Instruments traces with the xctrace-analyzer MCP server. Use for simple requests like "profile this app", "find why my app is slow", "check hangs", "find leaks", "inspect allocations", "analyze network", "profile startup", "analyze this .trace", or "compare these traces"; choose and run the right MCP execution tools without exposing MCP JSON to the user.
+description: Profile Xcode/macOS/iOS apps and Instruments traces with the xctrace-analyzer MCP server. Use for simple requests like "profile this app", "find why my app is slow", "check hangs", "find leaks", "inspect allocations", "analyze network", "profile startup", "analyze this .trace", "compare these traces", or "clean up profiling traces"; choose and run the right MCP execution tools without exposing MCP JSON to the user.
 ---
 
 # Xcode Trace Profiler
@@ -29,10 +29,12 @@ Be the user-facing profiler for xctrace-analyzer. Users should ask in plain lang
 - Network requests, failures, transfer volume, and top hosts when HAR or CFNetwork data is exportable
 - Energy / Power Profiler data where Xcode supports it, mainly iOS/iPadOS
 - Existing `.trace` files, optional dSYM symbolication, scoped `timeRangeMs` analysis, and Time Profiler regressions
+- Safe cleanup of generated `.trace` bundles after the user is done inspecting them
 
 ## Workflow
 
 1. Classify the request.
+   - Cleanup / delete traces: call `cleanup_traces`.
    - Existing `.trace`: call `analyze_trace`.
    - Baseline/current or regression: call `compare_traces`.
    - Explicit single template such as Leaks, Allocations, Network, or Time Profiler: call `track_running_app`.
@@ -59,6 +61,7 @@ Be the user-facing profiler for xctrace-analyzer. Users should ask in plain lang
    - Recording tools open the saved `.trace` in Instruments.app by default with `openInInstruments: true`; pass `false` only for CI or headless automation.
    - Use `durationSeconds: 60` by default; use 20-30 seconds only for explicit startup checks or longer when the repro needs it.
    - Use temp or ignored output locations such as `test-traces/`; do not commit `.trace` files.
+   - Keep recorded traces until the user has had a chance to inspect Instruments.app or asks for cleanup.
    - Use `check_xctrace`, `list_templates`, or `list_devices` only for setup, device selection, or troubleshooting.
 
 5. Interpret support status before conclusions.
@@ -75,6 +78,8 @@ Be the user-facing profiler for xctrace-analyzer. Users should ask in plain lang
    - Use `## Top User-Code Frames` from the scoped report to answer which app-owned code was running.
    - If Top User-Code Frames is empty but Time Profiler succeeded, rerun with better `userBinaryHints` or a dSYM.
    - If launch mode saves a trace but TOC export fails, retry by launching the app manually and attaching by exact PID.
+   - Once the user says the trace is no longer needed, call `cleanup_traces` with the exact trace path(s) and `dryRun: false`.
+   - For broad stale-trace cleanup, call `cleanup_traces` with `dryRun: true` first, or use `olderThanMinutes` before destructive directory cleanup.
 
 ## Final Answer Shape
 
@@ -84,5 +89,6 @@ Keep the final answer short and actionable:
 - What was supported, partial, not exportable, or unsupported.
 - Key findings for the requested concern: CPU, hangs, user-code frames, leaks, allocations, network, energy, or regression.
 - Whether Instruments.app opened for GUI verification.
+- Cleanup state: trace retained for inspection, cleanup completed, or cleanup previewed.
 - Concrete source areas to inspect next.
 - Any Export Diagnostics caveat that changes confidence.

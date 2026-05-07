@@ -9,7 +9,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { execFile as execFileCallback } from 'child_process';
-import { mkdir, mkdtemp } from 'fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, rm } from 'fs/promises';
 import { tmpdir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
@@ -117,6 +117,27 @@ type OutputFormat = 'markdown' | 'json' | 'both';
 interface InstrumentsOpenResult {
   status: 'opened' | 'failed';
   error?: string;
+}
+
+interface TraceCleanupEntry {
+  path: string;
+  status: 'would_delete' | 'deleted' | 'skipped' | 'failed';
+  sizeBytes?: number;
+  modifiedAt?: string;
+  ageMinutes?: number;
+  reason?: string;
+}
+
+interface TraceCleanupResult {
+  dryRun: boolean;
+  scope: string;
+  matchedCount: number;
+  deletedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  reclaimableBytes: number;
+  reclaimedBytes: number;
+  entries: TraceCleanupEntry[];
 }
 
 /**
@@ -455,6 +476,42 @@ export class XCTraceAnalyzerServer {
           properties: {},
         },
       },
+      {
+        name: 'cleanup_traces',
+        description: 'Trace garbage collector. Preview or delete .trace bundles after the user is done inspecting profiling results.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tracePaths: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Exact .trace paths to preview or delete. Safest option after a profiling report.',
+            },
+            directory: {
+              type: 'string',
+              description: 'Directory to scan for .trace bundles when tracePaths is omitted (default: test-traces).',
+            },
+            recursive: {
+              type: 'boolean',
+              description: 'Recursively scan subdirectories for .trace bundles when using directory mode (default: false).',
+            },
+            olderThanMinutes: {
+              type: 'number',
+              description: 'Only match traces older than this many minutes. Required for destructive directory cleanup.',
+            },
+            dryRun: {
+              type: 'boolean',
+              description: 'Preview cleanup without deleting files (default: true). Set false only after the user confirms the traces are no longer needed.',
+            },
+            outputFormat: {
+              type: 'string',
+              enum: ['markdown', 'json', 'both'],
+              description: 'Response format: markdown, json, or both (default: markdown)',
+            },
+          },
+          required: [],
+        },
+      },
     ];
   }
 
@@ -484,6 +541,9 @@ export class XCTraceAnalyzerServer {
 
         case 'check_xctrace':
           return await this.checkXCTrace();
+
+        case 'cleanup_traces':
+          return await this.cleanupTraces(args);
 
         default:
           throw new Error(`Unknown tool: ${toolName}`);
@@ -898,6 +958,76 @@ export class XCTraceAnalyzerServer {
     };
   }
 
+  /**
+   * Preview or delete generated .trace bundles.
+   */
+  private async cleanupTraces(args: any) {
+    const outputFormat = this.outputFormat(args);
+    const dryRun = this.optionalBoolean(args?.dryRun, 'dryRun') ?? true;
+    const tracePaths = this.optionalStringArray(args?.tracePaths, 'tracePaths') ?? [];
+    const directory = this.optionalString(args?.directory, 'directory');
+    const recursive = this.optionalBoolean(args?.recursive, 'recursive') ?? false;
+    const olderThanMinutes = this.optionalNonNegativeNumber(
+      args?.olderThanMinutes,
+      'olderThanMinutes'
+    );
+
+    if (!dryRun && tracePaths.length === 0 && olderThanMinutes === undefined) {
+      throw new Error(
+        'Refusing to delete a directory scan without exact tracePaths or olderThanMinutes. Preview with dryRun: true first, or pass olderThanMinutes.'
+      );
+    }
+
+    const scope = tracePaths.length > 0
+      ? 'exact trace paths'
+      : `${recursive ? 'recursive ' : ''}directory scan: ${resolve(directory ?? 'test-traces')}`;
+    const candidatePaths = tracePaths.length > 0
+      ? tracePaths.map((path) => resolve(path))
+      : await this.discoverTraceBundles(resolve(directory ?? 'test-traces'), recursive);
+
+    const entries: TraceCleanupEntry[] = [];
+    const seenPaths = new Set<string>();
+
+    for (const candidatePath of candidatePaths) {
+      if (seenPaths.has(candidatePath)) {
+        continue;
+      }
+      seenPaths.add(candidatePath);
+      entries.push(await this.cleanupTraceCandidate(candidatePath, dryRun, olderThanMinutes));
+    }
+
+    const result: TraceCleanupResult = {
+      dryRun,
+      scope,
+      matchedCount: entries.filter((entry) =>
+        entry.status === 'would_delete' || entry.status === 'deleted'
+      ).length,
+      deletedCount: entries.filter((entry) => entry.status === 'deleted').length,
+      skippedCount: entries.filter((entry) => entry.status === 'skipped').length,
+      failedCount: entries.filter((entry) => entry.status === 'failed').length,
+      reclaimableBytes: entries
+        .filter((entry) => entry.status === 'would_delete')
+        .reduce((total, entry) => total + (entry.sizeBytes ?? 0), 0),
+      reclaimedBytes: entries
+        .filter((entry) => entry.status === 'deleted')
+        .reduce((total, entry) => total + (entry.sizeBytes ?? 0), 0),
+      entries,
+    };
+
+    const output = this.formatTraceCleanupOutput(result);
+    const text = this.formatToolOutput(output, result, outputFormat);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text,
+        },
+      ],
+      ...(result.failedCount > 0 ? { isError: true } : {}),
+    };
+  }
+
   private requiredString(value: unknown, fieldName: string): string {
     if (typeof value !== 'string' || value.trim() === '') {
       throw new Error(`${fieldName} is required`);
@@ -918,6 +1048,16 @@ export class XCTraceAnalyzerServer {
     }
     if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
       throw new Error(`${fieldName} must be a positive number`);
+    }
+    return value;
+  }
+
+  private optionalNonNegativeNumber(value: unknown, fieldName: string): number | undefined {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+      throw new Error(`${fieldName} must be a non-negative number`);
     }
     return value;
   }
@@ -1191,6 +1331,129 @@ export class XCTraceAnalyzerServer {
     return values.some((value) => value.toLowerCase() === lower);
   }
 
+  private async discoverTraceBundles(directory: string, recursive: boolean): Promise<string[]> {
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return [];
+      }
+      throw error;
+    }
+
+    const tracePaths: string[] = [];
+    for (const entry of entries) {
+      const fullPath = join(directory, entry.name);
+      if (entry.name.endsWith('.trace')) {
+        tracePaths.push(fullPath);
+        continue;
+      }
+      if (recursive && entry.isDirectory()) {
+        tracePaths.push(...(await this.discoverTraceBundles(fullPath, recursive)));
+      }
+    }
+
+    return tracePaths;
+  }
+
+  private async cleanupTraceCandidate(
+    tracePath: string,
+    dryRun: boolean,
+    olderThanMinutes?: number
+  ): Promise<TraceCleanupEntry> {
+    if (!tracePath.endsWith('.trace')) {
+      return {
+        path: tracePath,
+        status: 'skipped',
+        reason: 'not a .trace bundle',
+      };
+    }
+
+    let stats;
+    try {
+      stats = await lstat(tracePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return {
+          path: tracePath,
+          status: 'skipped',
+          reason: 'path does not exist',
+        };
+      }
+      return {
+        path: tracePath,
+        status: 'failed',
+        reason: (error as Error).message,
+      };
+    }
+
+    if (stats.isSymbolicLink()) {
+      return {
+        path: tracePath,
+        status: 'skipped',
+        reason: 'symbolic links are not deleted',
+      };
+    }
+
+    const ageMinutes = Math.max(0, (Date.now() - stats.mtimeMs) / 60_000);
+    if (olderThanMinutes !== undefined && ageMinutes < olderThanMinutes) {
+      return {
+        path: tracePath,
+        status: 'skipped',
+        modifiedAt: stats.mtime.toISOString(),
+        ageMinutes,
+        reason: `newer than ${olderThanMinutes} minutes`,
+      };
+    }
+
+    const sizeBytes = await this.tracePathSizeBytes(tracePath);
+    const baseEntry = {
+      path: tracePath,
+      sizeBytes,
+      modifiedAt: stats.mtime.toISOString(),
+      ageMinutes,
+    };
+
+    if (dryRun) {
+      return {
+        ...baseEntry,
+        status: 'would_delete',
+      };
+    }
+
+    try {
+      await rm(tracePath, { recursive: true });
+      return {
+        ...baseEntry,
+        status: 'deleted',
+      };
+    } catch (error) {
+      return {
+        ...baseEntry,
+        status: 'failed',
+        reason: (error as Error).message,
+      };
+    }
+  }
+
+  private async tracePathSizeBytes(tracePath: string): Promise<number> {
+    const stats = await lstat(tracePath);
+    if (stats.isSymbolicLink()) {
+      return 0;
+    }
+    if (!stats.isDirectory()) {
+      return stats.size;
+    }
+
+    let total = stats.size;
+    const entries = await readdir(tracePath, { withFileTypes: true });
+    for (const entry of entries) {
+      total += await this.tracePathSizeBytes(join(tracePath, entry.name));
+    }
+    return total;
+  }
+
   private traceOutputPath(args: any, processName: string, template: string): string {
     if (args?.outputPath) {
       return resolve(this.requiredString(args.outputPath, 'outputPath'));
@@ -1264,6 +1527,7 @@ export class XCTraceAnalyzerServer {
     if (instrumentsLine) {
       lines.push(instrumentsLine);
     }
+    lines.push('- Cleanup: trace retained; use cleanup_traces when it is no longer needed');
     lines.push('');
     if (recording.workflowWarnings.length > 0) {
       lines.push('## Workflow Warnings');
@@ -1351,6 +1615,12 @@ export class XCTraceAnalyzerServer {
         ? ' (opened in Instruments.app)'
         : '';
       lines.push(`- ${result.template}: ${result.tracePath}${openSuffix}`);
+    }
+    if (profile.results.some((result) => !result.error)) {
+      lines.push('');
+      lines.push(
+        '_Trace files are retained for Instruments.app inspection. Use cleanup_traces when they are no longer needed._'
+      );
     }
     lines.push('');
 
@@ -1444,6 +1714,64 @@ export class XCTraceAnalyzerServer {
       default:
         return template;
     }
+  }
+
+  private formatTraceCleanupOutput(result: TraceCleanupResult): string {
+    const lines = [
+      '# Trace Cleanup Report',
+      '',
+      `- Mode: ${result.dryRun ? 'preview' : 'delete'}`,
+      `- Scope: ${result.scope}`,
+      `- Traces matched: ${result.matchedCount}`,
+      `- Deleted: ${result.deletedCount}`,
+      `- Skipped: ${result.skippedCount}`,
+      `- Failed: ${result.failedCount}`,
+      result.dryRun
+        ? `- Reclaimable space: ${this.formatBytes(result.reclaimableBytes)}`
+        : `- Reclaimed space: ${this.formatBytes(result.reclaimedBytes)}`,
+      '',
+      '## Traces',
+    ];
+
+    if (result.entries.length === 0) {
+      lines.push('- No .trace bundles matched.');
+    } else {
+      for (const entry of result.entries) {
+        lines.push(this.formatTraceCleanupEntry(entry));
+      }
+    }
+
+    lines.push('');
+    if (result.dryRun) {
+      lines.push(
+        'No files were deleted. Re-run with dryRun: false after the user confirms the traces are no longer needed.'
+      );
+    } else if (result.deletedCount > 0) {
+      lines.push('Deleted trace bundles cannot be opened in Instruments.app unless they are restored from backup.');
+    }
+
+    return lines.join('\n');
+  }
+
+  private formatTraceCleanupEntry(entry: TraceCleanupEntry): string {
+    const details = [
+      entry.sizeBytes !== undefined ? this.formatBytes(entry.sizeBytes) : undefined,
+      entry.ageMinutes !== undefined ? `${entry.ageMinutes.toFixed(1)} min old` : undefined,
+      entry.reason,
+    ].filter(Boolean);
+    const suffix = details.length > 0 ? ` (${details.join(', ')})` : '';
+    return `- ${entry.status}: ${entry.path}${suffix}`;
+  }
+
+  private formatBytes(bytes: number): string {
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let value = bytes;
+    let unitIndex = 0;
+    while (value >= 1024 && unitIndex < units.length - 1) {
+      value /= 1024;
+      unitIndex += 1;
+    }
+    return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
   }
 
   private instrumentSectionTitle(kind: string): string {

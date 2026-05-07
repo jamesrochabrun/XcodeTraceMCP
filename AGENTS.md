@@ -60,6 +60,7 @@ Recommended workflow:
 9. After identifying a hang start and duration, rerun `analyze_trace` with `timeRangeMs: { startMs, endMs }` around that interval to answer "what ran during the hang?"
 10. Use `## Top User-Code Frames` to answer "which of my code was slow?" Pass `userBinaryHints` if module names do not match the process names discovered from the TOC.
 11. Recording tools open saved traces in Instruments.app by default. Use `openInInstruments: false` only for CI or headless automation.
+12. Do not delete a trace immediately after reporting while the user may still need Instruments.app verification. Once the user says the trace is no longer needed, call `cleanup_traces` with exact `tracePaths` and `dryRun: false`. For broad directory cleanup, preview first or require `olderThanMinutes`.
 
 ### `profile_running_app`
 
@@ -103,6 +104,16 @@ Use this when the user already has a `.trace` file. It does not record. It can o
 
 Use this for Time Profiler baseline/current regression checks. It reports total-time deltas, function regressions, improvements, and can mark the MCP result as an error when `failOnRegression` is true.
 
+### `cleanup_traces`
+
+Use this as the trace garbage collector after recording workflows. It previews by default and only deletes paths ending in `.trace`.
+
+Recommended UX:
+
+1. After a report, keep the trace and mention that it can be cleaned up when the user is done inspecting it.
+2. If the user says to clean the last run, pass the exact trace path or paths with `dryRun: false`.
+3. For stale trace directories, run a dry run first or pass `olderThanMinutes` for destructive cleanup.
+
 ### Discovery Tools
 
 - `list_templates`: list Instruments templates available on the machine
@@ -115,6 +126,7 @@ Use this for Time Profiler baseline/current regression checks. It reports total-
 - Do not run separate `xctrace record` sessions in parallel for full profiling. They can contend for kperf/ktrace locks. Use the combined recording path in `profile_running_app`.
 - `xctrace` can save malformed or partial traces even when recording exits nonzero. Surface the underlying `xctrace` stderr/stdout details in reports.
 - `profile_running_app` and `track_running_app` should open the saved `.trace` in Instruments.app by default after recording; report the open status, but never treat an open failure as a recording failure.
+- Recorded `.trace` bundles can be large. Keep them for GUI verification, then use `cleanup_traces`; do not delete non-`.trace` paths.
 - Xcode export schemas vary by Xcode version and template. Prefer TOC-driven schema discovery over hard-coded table names.
 - Network analysis should prefer HAR export when available and fall back to XML table exports.
 - Every analysis family should be reported as `supported`, `partial`, `not_exportable`, or `unsupported`; do not imply Instruments.app GUI parity.

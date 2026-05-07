@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { XCTraceAnalyzerServer } from '../src/index.js';
 import { Analysis, Comparison, RecordOptions } from '@xctrace-analyzer/core';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 function analysis(overrides: Partial<Analysis> = {}): Analysis {
   return {
@@ -69,6 +72,15 @@ function comparison(overrides: Partial<Comparison> = {}): Comparison {
     summary: 'Performance regressed.',
     ...overrides,
   };
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 describe('XCTraceAnalyzerServer', () => {
@@ -328,6 +340,133 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).toContain('xctrace is available');
     expect(result.content[0].text).toContain('xctrace version 16.0 (17E192)');
     expect(result.content[0].text).toContain('Capabilities:');
+  });
+
+  it('previews exact trace cleanup by default', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'xctrace-cleanup-'));
+    const tracePath = join(tempDir, 'Preview.trace');
+    await mkdir(join(tracePath, 'run_data'), { recursive: true });
+    await writeFile(join(tracePath, 'run_data', 'data.bin'), 'trace payload');
+
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () => analysis(),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    try {
+      const result = await server.callTool('cleanup_traces', {
+        tracePaths: [tracePath],
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(result.content[0].text).toContain('# Trace Cleanup Report');
+      expect(result.content[0].text).toContain('- Mode: preview');
+      expect(result.content[0].text).toContain(`would_delete: ${tracePath}`);
+      expect(result.content[0].text).toContain('No files were deleted');
+      expect(await pathExists(tracePath)).toBe(true);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('deletes exact trace paths when cleanup is confirmed', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'xctrace-cleanup-'));
+    const tracePath = join(tempDir, 'DeleteMe.trace');
+    await mkdir(tracePath, { recursive: true });
+    await writeFile(join(tracePath, 'data.bin'), 'trace payload');
+
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () => analysis(),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    try {
+      const result = await server.callTool('cleanup_traces', {
+        tracePaths: [tracePath],
+        dryRun: false,
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(result.content[0].text).toContain('- Mode: delete');
+      expect(result.content[0].text).toContain(`deleted: ${tracePath}`);
+      expect(await pathExists(tracePath)).toBe(false);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('requires an age filter for destructive directory cleanup', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'xctrace-cleanup-'));
+    const tracePath = join(tempDir, 'Directory.trace');
+    await mkdir(tracePath, { recursive: true });
+
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () => analysis(),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    try {
+      const result = await server.callTool('cleanup_traces', {
+        directory: tempDir,
+        dryRun: false,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('Refusing to delete a directory scan');
+      expect(await pathExists(tracePath)).toBe(true);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('deletes directory-scanned traces only when an age filter is present', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'xctrace-cleanup-'));
+    const tracePath = join(tempDir, 'Old.trace');
+    const nonTracePath = join(tempDir, 'NotATrace');
+    await mkdir(tracePath, { recursive: true });
+    await mkdir(nonTracePath, { recursive: true });
+    await writeFile(join(tracePath, 'data.bin'), 'trace payload');
+
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () => analysis(),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    try {
+      const result = await server.callTool('cleanup_traces', {
+        directory: tempDir,
+        olderThanMinutes: 0,
+        dryRun: false,
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(result.content[0].text).toContain('- Scope: directory scan:');
+      expect(result.content[0].text).toContain(`deleted: ${tracePath}`);
+      expect(await pathExists(tracePath)).toBe(false);
+      expect(await pathExists(nonTracePath)).toBe(true);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('returns concise tool errors without stack traces', async () => {

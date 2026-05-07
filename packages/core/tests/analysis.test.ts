@@ -113,6 +113,45 @@ describe('PerformanceAnalyzer', () => {
     expect(analysis.summary).not.toContain('No significant performance bottlenecks detected');
   });
 
+  it('does not describe severe hangs as no significant performance bottlenecks', () => {
+    const trace = parsedTrace([{ name: 'LightWork', selfTime: 5 }]);
+    const analysis = new PerformanceAnalyzer().analyze(
+      {
+        ...trace,
+        hangs: {
+          events: [
+            {
+              startMs: 1000,
+              durationMs: 6160,
+              hangType: 'Severe Hang',
+              threadName: 'Main Thread',
+              schemaSource: 'potential-hangs',
+            },
+            {
+              startMs: 8000,
+              durationMs: 900,
+              hangType: 'Severe Hang',
+              threadName: 'Main Thread',
+              schemaSource: 'potential-hangs',
+            },
+          ],
+          totalHangMs: 7060,
+          severeCount: 2,
+          hangCount: 0,
+          microhangCount: 0,
+          longestMs: 6160,
+          sourceSchemas: ['potential-hangs'],
+        },
+      },
+      { slowThreshold: 100, topN: 5 }
+    );
+
+    expect(analysis.bottlenecks).toHaveLength(0);
+    expect(analysis.summary).toContain('⚠️ 2 severe hangs on the main thread (longest 6.16s).');
+    expect(analysis.summary).toContain('No Time Profiler CPU functions crossed the bottleneck threshold.');
+    expect(analysis.summary).not.toContain('✅ No significant performance bottlenecks detected.');
+  });
+
   it('aggregates deepest matching user-binary frames from Time Profiler samples', () => {
     const analysis = new PerformanceAnalyzer().analyze(
       {

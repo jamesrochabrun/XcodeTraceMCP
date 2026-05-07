@@ -406,16 +406,20 @@ export class PerformanceAnalyzer {
 
     // Overall assessment
     if (bottlenecks.length === 0 && !stats.timeProfileError) {
-      parts.push('✅ No significant performance bottlenecks detected.');
+      if (hangs && hangs.events.length > 0) {
+        parts.push('No Time Profiler CPU functions crossed the bottleneck threshold.');
+      } else {
+        parts.push('✅ No Time Profiler CPU bottlenecks detected.');
+      }
     } else {
       const critical = bottlenecks.filter(b => b.impact === 'critical').length;
       const high = bottlenecks.filter(b => b.impact === 'high').length;
 
       if (critical > 0) {
-        parts.push(`⚠️ Found ${critical} critical performance issue${critical > 1 ? 's' : ''}.`);
+        parts.push(`⚠️ Found ${critical} critical CPU bottleneck${critical > 1 ? 's' : ''}.`);
       }
       if (high > 0) {
-        parts.push(`Found ${high} high-impact issue${high > 1 ? 's' : ''}.`);
+        parts.push(`Found ${high} high-impact CPU bottleneck${high > 1 ? 's' : ''}.`);
       }
     }
 

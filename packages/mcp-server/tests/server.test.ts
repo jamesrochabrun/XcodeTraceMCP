@@ -940,6 +940,64 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).toContain('## Prioritized Recommendations');
   });
 
+  it('treats severe hangs as critical findings in combined profile reports', async () => {
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async (tracePath) =>
+        analysis({
+          metadata: {
+            ...analysis().metadata,
+            filePath: tracePath,
+          },
+          stats: {
+            ...analysis().stats,
+            slowFunctions: 0,
+            avgFunctionTime: 10,
+            maxFunctionTime: 10,
+          },
+          bottlenecks: [],
+          summary: '⚠️ 1 severe hang on the main thread (longest 4.71s). No Time Profiler CPU functions crossed the bottleneck threshold.',
+          hangs: {
+            events: [
+              {
+                startMs: 5644,
+                durationMs: 4710,
+                hangType: 'Severe Hang',
+                threadName: 'Main Thread (AgentHub)',
+                processName: 'AgentHub',
+                schemaSource: 'potential-hangs',
+              },
+            ],
+            totalHangMs: 4710,
+            severeCount: 1,
+            hangCount: 0,
+            microhangCount: 0,
+            longestMs: 4710,
+            sourceSchemas: ['potential-hangs'],
+          },
+        }),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    const result = await server.callTool('profile_running_app', {
+      processName: 'AgentHub',
+      preset: 'cpu',
+      durationSeconds: 5,
+      outputDirectory: '/tmp/profiles',
+    });
+
+    const text = result.content[0].text;
+    expect(text).toContain('- Overall status: critical issues found');
+    expect(text).toContain('No Time Profiler CPU functions crossed the bottleneck threshold.');
+    expect(text).toContain('## Hangs');
+    expect(text).toContain('critical Main-thread hangs: 1 hang detected (1 severe)');
+    expect(text).not.toContain('No high-priority recommendations found');
+  });
+
   it('renders Time Profiler parse failures and export diagnostics in combined profile reports', async () => {
     const server = new XCTraceAnalyzerServer({
       analyzeTraceFile: async (tracePath) =>

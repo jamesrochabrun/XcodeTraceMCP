@@ -194,6 +194,7 @@ Report sections include:
 - Summary, trace path, process, preset, recording strategy, and whether Instruments.app opened
 - Support matrix and export diagnostics
 - CPU / Time Profiler bottlenecks
+- Main-thread hang events; severe hangs are reported as critical findings even if no CPU function crosses the Time Profiler bottleneck threshold
 - Top User-Code Frames for app-attributed CPU work
 - Time Profiler parse-failure callouts when CPU samples could not be parsed
 - Leaks findings when exportable

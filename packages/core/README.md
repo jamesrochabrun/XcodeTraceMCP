@@ -2,13 +2,14 @@
 
 > Core analysis library for Xcode Instruments performance traces
 
-A TypeScript library for parsing and analyzing Xcode Instruments `.trace` files, identifying Time Profiler bottlenecks, app-attributed user-code frames, and additional Memory, Network, Energy, Allocations, and Leaks findings.
+A TypeScript library for parsing and analyzing Xcode Instruments `.trace` files, identifying Time Profiler bottlenecks, main-thread hangs, app-attributed user-code frames, and additional Memory, Network, Energy, Allocations, and Leaks findings.
 
 ## Features
 
 - 📊 Parse Time Profiler traces from xctrace XML output
 - 🧭 Parse Memory, Network, Energy, Allocations, and Leaks tables when exportable
 - 🔍 Identify slow functions and performance bottlenecks
+- 🧊 Surface main-thread hang events without treating clean CPU thresholds as a global all-clear
 - 🎯 Attribute Time Profiler samples to Top User-Code Frames
 - 📈 Compare traces to detect performance regressions
 - 💡 Generate actionable optimization recommendations
@@ -22,7 +23,7 @@ The core package is the reusable analysis layer behind the MCP server. It does n
 - `xctrace` process utilities for recording, exporting TOCs, exporting XPath tables, and exporting HAR data
 - Capability detection and symbolication utilities for local `xctrace`
 - `TraceParser` for normalizing Xcode `.trace` XML/HAR data into typed TypeScript structures
-- `PerformanceAnalyzer` for Time Profiler statistics, bottlenecks, user-code frame attribution, and summaries
+- `PerformanceAnalyzer` for Time Profiler statistics, bottlenecks, main-thread hang callouts, user-code frame attribution, and summaries
 - `RecommendationEngine` for CPU, memory, network, allocation, leak, and energy recommendations
 - `ComparativeAnalyzer` for Time Profiler baseline/current regression checks
 
@@ -231,6 +232,7 @@ interface Analysis {
   topFunctions: FunctionProfile[];
   userFrameProfiles?: UserFrameProfile[];
   instrumentAnalyses: InstrumentAnalysis[];
+  hangs?: HangsData;
   supportStatus?: AnalysisSupportStatus[];
   exportAttempts?: ExportAttempt[];
   summary: string;

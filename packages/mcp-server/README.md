@@ -103,6 +103,7 @@ Report contents:
 - Recording metadata: process, preset, duration, trace path, base template, instruments, and Instruments.app open status
 - Support matrix and export diagnostics
 - CPU / Time Profiler: bottlenecks, top functions, threads, slow function count, and CPU recommendations
+- Hangs: main-thread hang events; severe hangs affect Overall status and Prioritized Recommendations even when Time Profiler CPU thresholds are otherwise clean
 - Top User-Code Frames: app-attributed CPU frames from Time Profiler samples
 - Time Profiler parse-failure callouts when CPU samples could not be parsed
 - Leaks: leak count, leaked bytes, top leak sites, and leak findings when Xcode exports usable data

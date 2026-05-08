@@ -84,6 +84,7 @@ Report contents:
 
 - Recording metadata and saved trace path
 - Support matrix and export diagnostics
+- Main-thread hang events; severe hangs should affect overall status and prioritized recommendations even when no Time Profiler CPU function crosses the bottleneck threshold
 - CPU / Time Profiler bottlenecks
 - Top User-Code Frames for app-attributed CPU work
 - Time Profiler parse-failure callouts when CPU samples could not be parsed
@@ -133,6 +134,7 @@ Recommended UX:
 - GUI-only instrument tracks such as Leaks should be treated as `not_exportable` when they appear in the TOC but have no exportable table schema.
 - Support status must come from export attempts: `supported` has successful exports, `partial` has successful exports plus failed/empty/skipped attempts, `not_exportable` has schemas but no successful exports, and `unsupported` has no matching schemas.
 - Failed Time Profiler parsing should be surfaced through `PerformanceStats.timeProfileError` and MCP Export Diagnostics, not hidden behind "0 threads" summaries.
+- When exported hang events exist, do not pair them with a global green/no-issues summary. `No Time Profiler CPU functions crossed the bottleneck threshold` is a scoped CPU statement, not an all-clear; severe hangs are critical profile findings.
 - `timeRangeMs` is trace-relative milliseconds. Filter Time Profiler samples before aggregation and include hang events that overlap the window. It scopes analysis; it does not mutate or crop the source `.trace`.
 - Top User-Code Frames should use TOC-derived user process names plus `AnalysisOptions.userBinaryHints`, walk sample backtraces from leaf to root, and aggregate the deepest matching module frame by sample weight.
 - Use temp output paths for XML/HAR exports and symbolication so commands do not dirty the repo or mutate source traces.

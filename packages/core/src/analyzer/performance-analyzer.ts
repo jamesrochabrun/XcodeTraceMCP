@@ -430,7 +430,8 @@ export class PerformanceAnalyzer {
 
     // Hangs callout — most important user-visible signal, surface it first.
     const hangs = trace.hangs;
-    if (hangs && hangs.events.length > 0) {
+    const hasHangEvents = !!hangs && hangs.events.length > 0;
+    if (hasHangEvents) {
       const severe = hangs.severeCount;
       const longestS = (hangs.longestMs / 1000).toFixed(2);
       if (severe > 0) {
@@ -452,7 +453,7 @@ export class PerformanceAnalyzer {
 
     // Overall assessment
     if (bottlenecks.length === 0 && !stats.timeProfileError) {
-      if (hangs && hangs.events.length > 0) {
+      if (hasHangEvents) {
         parts.push('No Time Profiler CPU functions crossed the bottleneck threshold.');
       } else {
         parts.push('✅ No Time Profiler CPU bottlenecks detected.');

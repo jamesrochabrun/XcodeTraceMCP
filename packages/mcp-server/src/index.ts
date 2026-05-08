@@ -1686,11 +1686,17 @@ export class XCTraceAnalyzerServer {
     const hasCriticalBottleneck = results.some((result) =>
       result.analysis?.bottlenecks.some((bottleneck) => bottleneck.impact === 'critical')
     );
+    const hasSevereHang = results.some((result) =>
+      (result.analysis?.hangs?.severeCount ?? 0) > 0
+    );
+    const hasHang = results.some((result) =>
+      (result.analysis?.hangs?.events.length ?? 0) > 0
+    );
 
-    if (severities.includes('critical') || hasCriticalBottleneck) {
+    if (severities.includes('critical') || hasCriticalBottleneck || hasSevereHang) {
       return 'critical issues found';
     }
-    if (severities.includes('high') || severities.includes('medium')) {
+    if (severities.includes('high') || severities.includes('medium') || hasHang) {
       return 'warnings found';
     }
     if (results.some((result) => result.error)) {
@@ -2014,6 +2020,15 @@ export class XCTraceAnalyzerServer {
       for (const recommendation of result.analysis?.recommendations ?? []) {
         recommendations.add(
           `${recommendation.priority} ${recommendation.title}: ${recommendation.description}`
+        );
+      }
+
+      const hangs = result.analysis?.hangs;
+      if (hangs && hangs.events.length > 0) {
+        recommendations.add(
+          `${hangs.severeCount > 0 ? 'critical' : 'medium'} Main-thread hangs: ` +
+          `${hangs.events.length} hang${hangs.events.length > 1 ? 's' : ''} detected ` +
+          `(${hangs.severeCount} severe); inspect the Hangs section and scoped Top User-Code Frames for main-thread blocking work.`
         );
       }
 

@@ -1,6 +1,6 @@
 ---
 name: xctrace-profiler
-description: Profile Xcode/macOS/iOS apps and Instruments traces with the xctrace-analyzer MCP server. Use for simple requests like "profile this app", "find why my app is slow", "check hangs", "find leaks", "inspect allocations", "analyze network", "profile startup", "analyze this .trace", "compare these traces", or "clean up profiling traces"; choose and run the right MCP execution tools without exposing MCP JSON to the user.
+description: Profile Xcode/macOS/iOS apps and Instruments traces with the xctrace-analyzer MCP server. Use for simple requests like "profile this app", "record my app on launch", "find why my app is slow", "check hangs", "find leaks", "inspect allocations", "analyze network", "profile startup", "analyze this .trace", "compare these traces", or "clean up profiling traces"; choose and run the right MCP execution tools without exposing MCP JSON to the user.
 ---
 
 # Xcode Trace Profiler
@@ -17,6 +17,7 @@ Be the user-facing profiler for xctrace-analyzer. Users should ask in plain lang
 - "Check this build for leaks and allocation churn."
 - "Analyze network activity."
 - "Launch the app and profile startup."
+- "Record my app on launch."
 - "Analyze this trace."
 - "Compare these two traces."
 
@@ -45,6 +46,10 @@ Be the user-facing profiler for xctrace-analyzer. Users should ask in plain lang
    - If shell access is available and the app may already be running, discover candidate PIDs and prefer the exact PID.
    - Use attach-by-PID for already-running apps, especially when several processes share a name.
    - Use launch mode only for explicit startup/cold-launch profiling.
+   - If the user says "record my app on launch", "profile when I launch it", or similar and they will launch the app manually, do not wait for another confirmation. Say "OK, I'm ready. Launch the app now.", then immediately start observing for the app process until a valid PID appears.
+   - For manual launch observation, poll for the expected executable, bundle process, or app name every 200-500 ms for up to 60 seconds. As soon as one valid PID is visible, call the recording tool with `target: "attach"` and `processName` set to that exact PID so recording starts as close to launch as possible.
+   - If multiple matching PIDs appear during observation, prefer the newest app executable PID over helper processes. If ambiguity remains, keep observing briefly for a stable main-app PID; ask only if the candidates are still ambiguous.
+   - If no PID appears before the observation timeout, tell the user no launch was detected and ask them to relaunch or provide the exact app name, bundle id, or PID.
    - If no target can be discovered, ask one concise question for the app path, scheme, bundle id, process name, or PID.
    - Infer `userBinaryHints` from the app, scheme, executable, module, or bundle name.
 

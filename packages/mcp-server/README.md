@@ -75,6 +75,17 @@ The skill is the planner for this MCP server. It chooses between recording, exis
 - Use `cleanup_traces` after the user confirms recorded traces are no longer needed, or as a dry-run preview for stale trace directories.
 - Use `list_templates`, `list_devices`, and `check_xctrace` for setup and troubleshooting.
 
+### Security Defaults
+
+Attach profiling and trace analysis work by default. Higher-risk operations are opt-in:
+
+- `XCTRACE_ANALYZER_ALLOW_LAUNCH=1`: allow launch profiling.
+- `XCTRACE_ANALYZER_ALLOW_ALL_PROCESSES=1`: allow all-process recording.
+- `XCTRACE_ANALYZER_ALLOW_EXTERNAL_OUTPUT=1`: allow writing traces outside `XCTRACE_ANALYZER_TRACE_ROOT` (`test-traces` by default).
+- `XCTRACE_ANALYZER_ALLOW_EXTERNAL_CLEANUP=1`: allow destructive cleanup outside the trace root.
+- `XCTRACE_ANALYZER_MAX_DURATION_SECONDS`: maximum recording duration, default `300`.
+- `XCTRACE_ANALYZER_REDACTION`: `balanced` by default; use `strict` or `off` for trusted local workflows.
+
 ### `profile_running_app`
 
 Record a running app once with a profiling preset and return one combined report. `durationSeconds: 60` means one 60-second recording. The preset uses a base template plus additional Instruments where Xcode supports it.

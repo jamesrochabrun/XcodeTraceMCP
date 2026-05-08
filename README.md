@@ -180,6 +180,17 @@ MCP server exposing the core library to AI assistants.
 - `cleanup_traces` - Preview or delete generated `.trace` bundles after inspection
 - `list_templates`, `list_devices`, `check_xctrace`
 
+### Security Defaults
+
+The MCP server keeps normal attach profiling and existing trace analysis available by default, but operations that can expose unrelated user data or affect arbitrary local paths require explicit trust configuration:
+
+- Launch profiling is disabled unless `XCTRACE_ANALYZER_ALLOW_LAUNCH=1`.
+- All-process profiling is disabled unless `XCTRACE_ANALYZER_ALLOW_ALL_PROCESSES=1`.
+- Recording output defaults to `test-traces`; external output paths require `XCTRACE_ANALYZER_ALLOW_EXTERNAL_OUTPUT=1`.
+- Destructive cleanup is limited to recorded traces or the trace root unless `XCTRACE_ANALYZER_ALLOW_EXTERNAL_CLEANUP=1`.
+- `XCTRACE_ANALYZER_MAX_DURATION_SECONDS` defaults to `300`.
+- `XCTRACE_ANALYZER_REDACTION` defaults to `balanced`; use `strict` or `off` for trusted local workflows.
+
 ---
 
 ## MCP Tool Reference

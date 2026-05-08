@@ -433,4 +433,105 @@ describe('TraceParser', () => {
       })
     );
   });
+
+  it('escapes TOC-derived XPath literals before exporting tables', async () => {
+    let capturedXPath: string | undefined;
+    const parser = new TraceParser({
+      exportTOC: async () => `
+        <trace-toc>
+          <run number="1">
+            <duration>1s</duration>
+            <data>
+              <table schema='memory-"odd-schema'/>
+            </data>
+          </run>
+        </trace-toc>
+      `,
+      exportTable: async () => '',
+      exportXPath: async (_tracePath, xpath) => {
+        capturedXPath = xpath;
+        return `
+          <table>
+            <row>
+              <column name="Peak Memory" value="1024"/>
+            </row>
+          </table>
+        `;
+      },
+    });
+
+    const trace = await parser.parseTrace('packages/core/package.json');
+
+    expect(capturedXPath).toContain('table[@schema=\'memory-"odd-schema\']');
+    expect(trace.instrumentAnalyses?.find((analysis) => analysis.kind === 'memory')?.metrics).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: 'Peak Memory', numericValue: 1024 })])
+    );
+  });
+
+  it('does not expand DOCTYPE entities from exported XML', async () => {
+    const parser = new TraceParser({
+      exportTOC: async () => `
+        <trace-toc>
+          <run number="1">
+            <duration>1s</duration>
+            <data>
+              <table schema="time-profile"/>
+            </data>
+          </run>
+        </trace-toc>
+      `,
+      exportTable: async () => `
+        <!DOCTYPE table [<!ENTITY boom "ExpandedSecret">]>
+        <table>
+          <row time="100" thread="7" weight="1">
+            <backtrace>
+              <frame name="App\`&boom;"/>
+            </backtrace>
+          </row>
+        </table>
+      `,
+    });
+
+    const trace = await parser.parseTrace('packages/core/package.json');
+
+    expect(trace.timeProfile?.functionProfiles.map((profile) => profile.name)).not.toContain('ExpandedSecret');
+  });
+
+  it('fails safely when XML id/ref relationships are cyclic', async () => {
+    const parser = new TraceParser({
+      exportTOC: async () => `
+        <trace-toc>
+          <run number="1">
+            <duration>1s</duration>
+            <data>
+              <table schema="potential-hangs"/>
+            </data>
+          </run>
+        </trace-toc>
+      `,
+      exportTable: async () => `
+        <table>
+          <row>
+            <start-time>100000000</start-time>
+            <duration>100000000</duration>
+            <hang-type>Hang</hang-type>
+            <thread id="1" fmt="Main Thread"><process ref="1"/></thread>
+          </row>
+        </table>
+      `,
+    });
+
+    const trace = await parser.parseTrace('packages/core/package.json');
+
+    expect(trace.hangs).toBeUndefined();
+    expect(trace.exportAttempts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'hangs',
+          status: 'failed',
+          message: expect.stringContaining('Cyclic XML id/ref'),
+        }),
+      ])
+    );
+  });
 });

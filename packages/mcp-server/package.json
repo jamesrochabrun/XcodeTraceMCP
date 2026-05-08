@@ -17,12 +17,18 @@
     "start": "node dist/index.js",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
-  "keywords": ["xcode", "instruments", "mcp", "ai", "claude"],
+  "keywords": [
+    "xcode",
+    "instruments",
+    "mcp",
+    "ai",
+    "claude"
+  ],
   "author": "James Rochabrun",
   "license": "MIT",
   "dependencies": {
-    "@xctrace-analyzer/core": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@xctrace-analyzer/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",

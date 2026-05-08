@@ -11,7 +11,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { execFile as execFileCallback } from 'child_process';
 import { lstat, mkdir, mkdtemp, readdir, rm } from 'fs/promises';
 import { tmpdir } from 'os';
-import { basename, dirname, join, resolve } from 'path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import {
   CallToolRequestSchema,
@@ -140,15 +140,51 @@ interface TraceCleanupResult {
   entries: TraceCleanupEntry[];
 }
 
+export type RedactionMode = 'balanced' | 'strict' | 'off';
+
+export interface XCTraceAnalyzerSecurityOptions {
+  allowLaunchProfiling?: boolean;
+  allowAllProcessesProfiling?: boolean;
+  allowExternalTraceOutput?: boolean;
+  allowExternalTraceCleanup?: boolean;
+  traceRoot?: string;
+  maxDurationSeconds?: number;
+  redaction?: RedactionMode;
+}
+
+interface ResolvedSecurityOptions {
+  allowLaunchProfiling: boolean;
+  allowAllProcessesProfiling: boolean;
+  allowExternalTraceOutput: boolean;
+  allowExternalTraceCleanup: boolean;
+  traceRoot: string;
+  maxDurationSeconds: number;
+  redaction: RedactionMode;
+}
+
+const DEFAULT_TRACE_ROOT = 'test-traces';
+const DEFAULT_MAX_DURATION_SECONDS = 300;
+const MAX_TOP_N = 100;
+const MAX_STRING_LENGTH = 4096;
+const MAX_LAUNCH_ARGUMENTS = 128;
+const MAX_USER_BINARY_HINTS = 64;
+const MAX_ENVIRONMENT_VARIABLES = 64;
+
 /**
  * MCP Server for Xcode Instruments trace analysis
  */
 export class XCTraceAnalyzerServer {
   private server: Server;
   private deps: XCTraceAnalyzerDependencies;
+  private security: ResolvedSecurityOptions;
+  private recordedTracePaths = new Set<string>();
 
-  constructor(deps: XCTraceAnalyzerDependencies = defaultDependencies) {
+  constructor(
+    deps: XCTraceAnalyzerDependencies = defaultDependencies,
+    securityOptions: XCTraceAnalyzerSecurityOptions = {}
+  ) {
     this.deps = deps;
+    this.security = resolveSecurityOptions(securityOptions);
     this.server = new Server(
       {
         name: 'xctrace-analyzer',
@@ -563,28 +599,33 @@ export class XCTraceAnalyzerServer {
   }
 
   private formatToolError(error: Error): string {
-    const message = `Error: ${error.message}`;
+    const message = `Error: ${this.safeInlineText(error.message)}`;
     if (!this.isTraceTocExportFailure(error.message)) {
-      return message;
+      return this.sanitizeReportText(message);
     }
 
-    return [
+    return this.sanitizeReportText([
       message,
       '',
       '## Next Steps',
       ...this.traceExportFailureNextSteps().map((step) => `- ${step}`),
-    ].join('\n');
+    ].join('\n'));
   }
 
   /**
    * Analyze a trace file
    */
   private async analyzeTrace(args: any) {
-    const { slowThreshold, topN } = args;
     const tracePath = this.requiredString(args?.tracePath, 'tracePath');
     const outputFormat = this.outputFormat(args);
     const timeRangeMs = this.optionalTimeRangeMs(args?.timeRangeMs);
-    const userBinaryHints = this.optionalStringArray(args?.userBinaryHints, 'userBinaryHints');
+    const userBinaryHints = this.optionalStringArray(
+      args?.userBinaryHints,
+      'userBinaryHints',
+      MAX_USER_BINARY_HINTS
+    );
+    const slowThreshold = this.optionalNonNegativeNumber(args?.slowThreshold, 'slowThreshold');
+    const topN = this.optionalPositiveInteger(args?.topN, 'topN', MAX_TOP_N);
     const preparedTracePath = await this.prepareTraceForAnalysis(
       tracePath,
       this.optionalString(args?.dsymPath, 'dsymPath')
@@ -611,7 +652,7 @@ export class XCTraceAnalyzerServer {
     }
 
     // Format output for Claude
-    const output = this.formatAnalysisOutput(analysis);
+    const output = this.formatAnalysisOutput(this.safeDisplayValue(analysis) as Analysis);
     const text = this.formatToolOutput(output, this.structuredAnalysis(analysis), outputFormat);
 
     return {
@@ -628,7 +669,7 @@ export class XCTraceAnalyzerServer {
    * Compare two trace files
    */
   private async compareTraces(args: any) {
-    const { baselinePath, currentPath, regressionThreshold, failOnRegression } = args;
+    const { baselinePath, currentPath } = args;
     const outputFormat = this.outputFormat(args);
     const preparedBaselinePath = await this.prepareTraceForAnalysis(
       this.requiredString(baselinePath, 'baselinePath'),
@@ -640,8 +681,8 @@ export class XCTraceAnalyzerServer {
     );
 
     const comparisonOptions: ComparisonOptions = {
-      regressionThreshold,
-      failOnRegression,
+      regressionThreshold: this.optionalNonNegativeNumber(args?.regressionThreshold, 'regressionThreshold'),
+      failOnRegression: this.optionalBoolean(args?.failOnRegression, 'failOnRegression'),
     };
 
     const comparison = await this.deps.compareTraceFiles(
@@ -652,7 +693,7 @@ export class XCTraceAnalyzerServer {
     );
 
     // Format output
-    const output = this.formatComparisonOutput(comparison);
+    const output = this.formatComparisonOutput(this.safeDisplayValue(comparison) as Comparison);
     const text = this.formatToolOutput(output, comparison, outputFormat);
 
     return {
@@ -662,7 +703,7 @@ export class XCTraceAnalyzerServer {
           text,
         },
       ],
-      ...(failOnRegression && comparison.hasRegression ? { isError: true } : {}),
+      ...(comparisonOptions.failOnRegression && comparison.hasRegression ? { isError: true } : {}),
     };
   }
 
@@ -673,6 +714,7 @@ export class XCTraceAnalyzerServer {
     const target = this.recordTargetOptions(args);
     const template = this.optionalString(args?.template, 'template') ?? 'Leaks';
     const duration = this.optionalPositiveNumber(args?.durationSeconds, 'durationSeconds') ?? 60;
+    this.assertDurationWithinLimit(duration);
     const outputFormat = this.outputFormat(args);
     const outputPath = this.traceOutputPath(args, target.fileLabel, template);
     const openInInstruments = this.optionalBoolean(args?.openInInstruments, 'openInInstruments') ?? true;
@@ -690,6 +732,7 @@ export class XCTraceAnalyzerServer {
     };
 
     await this.deps.recordTrace(recordOptions);
+    this.rememberRecordedTrace(outputPath);
     const instrumentsOpen = await this.openTraceInInstruments(outputPath, openInInstruments);
 
     const lines = this.formatTrackingHeader({
@@ -728,16 +771,20 @@ export class XCTraceAnalyzerServer {
       };
     }
 
-    const userBinaryHints = this.optionalStringArray(args?.userBinaryHints, 'userBinaryHints');
+    const userBinaryHints = this.optionalStringArray(
+      args?.userBinaryHints,
+      'userBinaryHints',
+      MAX_USER_BINARY_HINTS
+    );
     const options: AnalysisOptions = {
-      slowThreshold: args?.slowThreshold,
-      topN: args?.topN,
+      slowThreshold: this.optionalNonNegativeNumber(args?.slowThreshold, 'slowThreshold'),
+      topN: this.optionalPositiveInteger(args?.topN, 'topN', MAX_TOP_N),
       includeRecommendations: true,
       ...(userBinaryHints ? { userBinaryHints } : {}),
     };
 
     const analysis = await this.deps.analyzeTraceFile(outputPath, options);
-    lines.push(this.formatAnalysisOutput(analysis));
+    lines.push(this.formatAnalysisOutput(this.safeDisplayValue(analysis) as Analysis));
     const markdown = lines.join('\n');
 
     return {
@@ -772,10 +819,12 @@ export class XCTraceAnalyzerServer {
     const preset = this.optionalString(args?.preset, 'preset') ?? 'full';
     const profilePreset = this.profilePresetForName(preset);
     const duration = this.optionalPositiveNumber(args?.durationSeconds, 'durationSeconds') ?? 60;
+    this.assertDurationWithinLimit(duration);
     const outputFormat = this.outputFormat(args);
     const outputDirectory = resolve(
-      this.optionalString(args?.outputDirectory, 'outputDirectory') ?? 'test-traces'
+      this.optionalString(args?.outputDirectory, 'outputDirectory') ?? this.security.traceRoot
     );
+    this.assertTraceDirectoryAllowed(outputDirectory, 'outputDirectory');
     const device = args?.device !== undefined && args?.device !== null
       ? this.requiredString(args.device, 'device')
       : undefined;
@@ -784,7 +833,11 @@ export class XCTraceAnalyzerServer {
     const startedAt = new Date().toISOString().replace(/[:.]/g, '-');
     const results: ProfileTraceResult[] = [];
     const capabilityWarnings = await this.profileCapabilityWarnings(profilePreset);
-    const userBinaryHints = this.optionalStringArray(args?.userBinaryHints, 'userBinaryHints');
+    const userBinaryHints = this.optionalStringArray(
+      args?.userBinaryHints,
+      'userBinaryHints',
+      MAX_USER_BINARY_HINTS
+    );
 
     await mkdir(outputDirectory, { recursive: true });
 
@@ -804,12 +857,13 @@ export class XCTraceAnalyzerServer {
         outputPath,
         ...(device ? { device } : {}),
       });
+      this.rememberRecordedTrace(outputPath);
       const instrumentsOpen = await this.openTraceInInstruments(outputPath, openInInstruments);
 
       const analysis = analyze
         ? await this.deps.analyzeTraceFile(outputPath, {
-          slowThreshold: args?.slowThreshold,
-          topN: args?.topN,
+          slowThreshold: this.optionalNonNegativeNumber(args?.slowThreshold, 'slowThreshold'),
+          topN: this.optionalPositiveInteger(args?.topN, 'topN', MAX_TOP_N),
           includeRecommendations: true,
           ...(userBinaryHints ? { userBinaryHints } : {}),
         })
@@ -831,7 +885,7 @@ export class XCTraceAnalyzerServer {
       instruments: profilePreset.instruments,
       duration,
       device,
-      results,
+      results: this.safeDisplayValue(results) as ProfileTraceResult[],
       analyze,
       capabilityWarnings,
       workflowWarnings: target.workflowWarnings,
@@ -876,12 +930,13 @@ export class XCTraceAnalyzerServer {
    */
   private async listTemplates() {
     const templates = await this.deps.listTemplates();
+    const safeTemplates = templates.map((template) => this.safeInlineText(template));
 
     return {
       content: [
         {
           type: 'text',
-          text: `Available Instruments Templates:\n\n${templates.join('\n')}`,
+          text: this.sanitizeReportText(`Available Instruments Templates:\n\n${safeTemplates.join('\n')}`),
         },
       ],
     };
@@ -892,12 +947,13 @@ export class XCTraceAnalyzerServer {
    */
   private async listDevices() {
     const devices = await this.deps.listDevices();
+    const safeDevices = devices.map((device) => this.safeInlineText(device));
 
     return {
       content: [
         {
           type: 'text',
-          text: `Available Devices:\n\n${devices.join('\n')}`,
+          text: this.sanitizeReportText(`Available Devices:\n\n${safeDevices.join('\n')}`),
         },
       ],
     };
@@ -922,37 +978,43 @@ export class XCTraceAnalyzerServer {
       };
     }
 
+    const version = this.safeInlineText(capabilities.version ?? 'unknown');
+    const recordModes = capabilities.recordModes.map((mode) => this.safeInlineText(mode));
+    const exportModes = capabilities.exportModes.map((mode) => this.safeInlineText(mode));
+    const templates = capabilities.templates.map((template) => this.safeInlineText(template));
+    const warnings = capabilities.warnings.map((warning) => this.safeInlineText(warning));
+
     const lines = [
       '✅ xctrace is available and ready to use.',
       '',
-      `Version: ${capabilities.version ?? 'unknown'}`,
+      `Version: ${version}`,
       '',
       'Capabilities:',
-      `- Record modes: ${capabilities.recordModes.join(', ') || 'none detected'}`,
-      `- Export modes: ${capabilities.exportModes.join(', ') || 'none detected'}`,
+      `- Record modes: ${recordModes.join(', ') || 'none detected'}`,
+      `- Export modes: ${exportModes.join(', ') || 'none detected'}`,
       `- Symbolication: ${capabilities.supportsSymbolication ? 'available' : 'not detected'}`,
       `- Templates detected: ${capabilities.templates.length}`,
       `- Devices detected: ${capabilities.devices.length}`,
       `- Addable instruments detected: ${capabilities.instruments.length}`,
     ];
 
-    if (capabilities.templates.length > 0) {
+    if (templates.length > 0) {
       lines.push('');
       lines.push('Templates:');
-      lines.push(...capabilities.templates.map((template) => `- ${template}`));
+      lines.push(...templates.map((template) => `- ${template}`));
     }
 
-    if (capabilities.warnings.length > 0) {
+    if (warnings.length > 0) {
       lines.push('');
       lines.push('Warnings:');
-      lines.push(...capabilities.warnings.map((warning) => `- ${warning}`));
+      lines.push(...warnings.map((warning) => `- ${warning}`));
     }
 
     return {
       content: [
         {
           type: 'text',
-          text: lines.join('\n'),
+          text: this.sanitizeReportText(lines.join('\n')),
         },
       ],
     };
@@ -980,10 +1042,15 @@ export class XCTraceAnalyzerServer {
 
     const scope = tracePaths.length > 0
       ? 'exact trace paths'
-      : `${recursive ? 'recursive ' : ''}directory scan: ${resolve(directory ?? 'test-traces')}`;
+      : `${recursive ? 'recursive ' : ''}directory scan: ${resolve(directory ?? this.security.traceRoot)}`;
     const candidatePaths = tracePaths.length > 0
       ? tracePaths.map((path) => resolve(path))
-      : await this.discoverTraceBundles(resolve(directory ?? 'test-traces'), recursive);
+      : await this.discoverTraceBundles(resolve(directory ?? this.security.traceRoot), recursive);
+
+    if (!dryRun && tracePaths.length === 0) {
+      const scanDirectory = resolve(directory ?? this.security.traceRoot);
+      this.assertCleanupDirectoryAllowed(scanDirectory);
+    }
 
     const entries: TraceCleanupEntry[] = [];
     const seenPaths = new Set<string>();
@@ -1032,7 +1099,11 @@ export class XCTraceAnalyzerServer {
     if (typeof value !== 'string' || value.trim() === '') {
       throw new Error(`${fieldName} is required`);
     }
-    return value.trim();
+    const stringValue = value.trim();
+    if (stringValue.length > MAX_STRING_LENGTH) {
+      throw new Error(`${fieldName} must be ${MAX_STRING_LENGTH} characters or fewer`);
+    }
+    return stringValue;
   }
 
   private optionalString(value: unknown, fieldName: string): string | undefined {
@@ -1062,18 +1133,54 @@ export class XCTraceAnalyzerServer {
     return value;
   }
 
-  private optionalStringArray(value: unknown, fieldName: string): string[] | undefined {
+  private optionalPositiveInteger(
+    value: unknown,
+    fieldName: string,
+    maxValue: number
+  ): number | undefined {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+    if (
+      typeof value !== 'number' ||
+      !Number.isFinite(value) ||
+      !Number.isInteger(value) ||
+      value <= 0 ||
+      value > maxValue
+    ) {
+      throw new Error(`${fieldName} must be a positive integer no greater than ${maxValue}`);
+    }
+    return value;
+  }
+
+  private assertDurationWithinLimit(duration: number): void {
+    if (duration > this.security.maxDurationSeconds) {
+      throw new Error(
+        `durationSeconds must be no greater than ${this.security.maxDurationSeconds}. ` +
+        'Increase XCTRACE_ANALYZER_MAX_DURATION_SECONDS only for trusted profiling sessions.'
+      );
+    }
+  }
+
+  private optionalStringArray(
+    value: unknown,
+    fieldName: string,
+    maxItems = MAX_LAUNCH_ARGUMENTS
+  ): string[] | undefined {
     if (value === undefined || value === null) {
       return undefined;
     }
     if (!Array.isArray(value)) {
       throw new Error(`${fieldName} must be an array of strings`);
     }
+    if (value.length > maxItems) {
+      throw new Error(`${fieldName} must contain ${maxItems} items or fewer`);
+    }
     const strings = value.map((item, index) => {
       if (typeof item !== 'string' || item.trim() === '') {
         throw new Error(`${fieldName}[${index}] must be a non-empty string`);
       }
-      return item.trim();
+      return this.requiredString(item, `${fieldName}[${index}]`);
     });
     return strings.length > 0 ? strings : undefined;
   }
@@ -1117,16 +1224,65 @@ export class XCTraceAnalyzerServer {
   }
 
   private formatToolOutput(markdown: string, structured: unknown, outputFormat: OutputFormat): string {
+    const safeMarkdown = this.sanitizeReportText(markdown);
+    const safeStructured = this.redactStructuredValue(structured, false);
     if (outputFormat === 'markdown') {
-      return markdown;
+      return safeMarkdown;
     }
 
-    const json = JSON.stringify(structured, null, 2);
+    const json = JSON.stringify(safeStructured, null, 2);
     if (outputFormat === 'json') {
       return json;
     }
 
-    return `${markdown}\n\n## Structured Result\n\n\`\`\`json\n${json}\n\`\``;
+    const fence = codeFenceFor(json);
+    return `${safeMarkdown}\n\n## Structured Result\n\n${fence}json\n${json}\n${fence}`;
+  }
+
+  private safeDisplayValue(value: unknown): unknown {
+    return this.redactStructuredValue(value, true);
+  }
+
+  private sanitizeReportText(value: string): string {
+    return redactText(value, this.security.redaction, false);
+  }
+
+  private safeInlineText(value: unknown): string {
+    return redactText(String(value ?? ''), this.security.redaction, true);
+  }
+
+  private redactStructuredValue(value: unknown, collapseStrings: boolean): unknown {
+    const seen = new WeakMap<object, unknown>();
+
+    const visit = (item: unknown): unknown => {
+      if (typeof item === 'string') {
+        return redactText(item, this.security.redaction, collapseStrings);
+      }
+      if (item === null || item === undefined || typeof item !== 'object') {
+        return item;
+      }
+      if (item instanceof Date) {
+        return item;
+      }
+      const cached = seen.get(item);
+      if (cached) {
+        return cached;
+      }
+      if (Array.isArray(item)) {
+        const out: unknown[] = [];
+        seen.set(item, out);
+        out.push(...item.map(visit));
+        return out;
+      }
+      const out: Record<string, unknown> = {};
+      seen.set(item, out);
+      for (const [key, child] of Object.entries(item as Record<string, unknown>)) {
+        out[key] = visit(child);
+      }
+      return out;
+    };
+
+    return visit(value);
   }
 
   private structuredAnalysis(analysis: Analysis) {
@@ -1178,6 +1334,12 @@ export class XCTraceAnalyzerServer {
       this.optionalString(args?.appIdentifier, 'appIdentifier');
 
     if (target === 'all-processes' || args?.allProcesses === true) {
+      if (!this.security.allowAllProcessesProfiling) {
+        throw new Error(
+          'All-process profiling is disabled by default because traces can expose data from unrelated apps. ' +
+          'Set XCTRACE_ANALYZER_ALLOW_ALL_PROCESSES=1 or configure allowAllProcessesProfiling for trusted sessions.'
+        );
+      }
       return {
         fileLabel: 'all-processes',
         reportLabel: 'all processes',
@@ -1188,6 +1350,19 @@ export class XCTraceAnalyzerServer {
 
     if (target === 'launch' || launchCommand) {
       const command = launchCommand ?? this.requiredString(args?.launchCommand, 'launchCommand');
+      if (!this.security.allowLaunchProfiling) {
+        throw new Error(
+          'Launch profiling is disabled by default because it can execute local programs. ' +
+          'Set XCTRACE_ANALYZER_ALLOW_LAUNCH=1 or configure allowLaunchProfiling for trusted sessions.'
+        );
+      }
+      if (command.length > 1024) {
+        throw new Error('launchCommand must be 1024 characters or fewer');
+      }
+      const targetStdin = this.optionalString(args?.targetStdin, 'targetStdin');
+      const targetStdout = this.optionalString(args?.targetStdout, 'targetStdout');
+      this.assertStreamPathAllowed(targetStdin, 'targetStdin');
+      this.assertStreamPathAllowed(targetStdout, 'targetStdout');
       return {
         fileLabel: command,
         reportLabel: `launch: ${command}`,
@@ -1196,10 +1371,14 @@ export class XCTraceAnalyzerServer {
         ],
         recordOptions: {
           launchCommand: command,
-          launchArguments: this.optionalStringArray(args?.launchArguments, 'launchArguments'),
+          launchArguments: this.optionalStringArray(
+            args?.launchArguments,
+            'launchArguments',
+            MAX_LAUNCH_ARGUMENTS
+          ),
           environment: this.optionalStringMap(args?.environment, 'environment'),
-          targetStdin: this.optionalString(args?.targetStdin, 'targetStdin'),
-          targetStdout: this.optionalString(args?.targetStdout, 'targetStdout'),
+          targetStdin,
+          targetStdout,
         },
       };
     }
@@ -1231,7 +1410,18 @@ export class XCTraceAnalyzerServer {
     ) {
       throw new Error(`${fieldName} must be an object with string values`);
     }
-    return value as Record<string, string>;
+    const entries = Object.entries(value as Record<string, string>);
+    if (entries.length > MAX_ENVIRONMENT_VARIABLES) {
+      throw new Error(`${fieldName} must contain ${MAX_ENVIRONMENT_VARIABLES} entries or fewer`);
+    }
+    const output: Record<string, string> = {};
+    for (const [key, item] of entries) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+        throw new Error(`${fieldName} contains invalid environment variable name: ${key}`);
+      }
+      output[key] = this.requiredString(item, `${fieldName}.${key}`);
+    }
+    return output;
   }
 
   private optionalBoolean(value: unknown, fieldName: string): boolean | undefined {
@@ -1422,6 +1612,14 @@ export class XCTraceAnalyzerServer {
       };
     }
 
+    if (!this.canDeleteTracePath(tracePath)) {
+      return {
+        ...baseEntry,
+        status: 'failed',
+        reason: 'destructive cleanup outside the configured trace root is disabled',
+      };
+    }
+
     try {
       await rm(tracePath, { recursive: true });
       return {
@@ -1454,14 +1652,21 @@ export class XCTraceAnalyzerServer {
     return total;
   }
 
+  private rememberRecordedTrace(tracePath: string): void {
+    this.recordedTracePaths.add(resolve(tracePath));
+  }
+
   private traceOutputPath(args: any, processName: string, template: string): string {
     if (args?.outputPath) {
-      return resolve(this.requiredString(args.outputPath, 'outputPath'));
+      const outputPath = resolve(this.requiredString(args.outputPath, 'outputPath'));
+      this.assertTraceOutputPathAllowed(outputPath, 'outputPath');
+      return outputPath;
     }
 
     const outputDirectory = resolve(
-      this.optionalString(args?.outputDirectory, 'outputDirectory') ?? 'test-traces'
+      this.optionalString(args?.outputDirectory, 'outputDirectory') ?? this.security.traceRoot
     );
+    this.assertTraceDirectoryAllowed(outputDirectory, 'outputDirectory');
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const fileName = [
       this.safeFileName(processName),
@@ -1470,6 +1675,59 @@ export class XCTraceAnalyzerServer {
     ].join('-');
 
     return join(outputDirectory, `${fileName}.trace`);
+  }
+
+  private assertTraceOutputPathAllowed(tracePath: string, fieldName: string): void {
+    if (!tracePath.endsWith('.trace')) {
+      throw new Error(`${fieldName} must end in .trace`);
+    }
+    const directory = dirname(tracePath);
+    this.assertTraceDirectoryAllowed(directory, fieldName);
+  }
+
+  private assertTraceDirectoryAllowed(directory: string, fieldName: string): void {
+    if (this.security.allowExternalTraceOutput || this.isWithinTraceRoot(directory)) {
+      return;
+    }
+    throw new Error(
+      `${fieldName} must be inside the configured trace root (${this.security.traceRoot}) ` +
+      'unless external trace output is explicitly enabled.'
+    );
+  }
+
+  private assertStreamPathAllowed(pathValue: string | undefined, fieldName: string): void {
+    if (!pathValue || pathValue === '-') {
+      return;
+    }
+    const resolvedPath = resolve(pathValue);
+    if (this.security.allowExternalTraceOutput || this.isWithinTraceRoot(resolvedPath)) {
+      return;
+    }
+    throw new Error(
+      `${fieldName} must be "-" or inside the configured trace root (${this.security.traceRoot}) ` +
+      'unless external trace output is explicitly enabled.'
+    );
+  }
+
+  private assertCleanupDirectoryAllowed(directory: string): void {
+    if (this.security.allowExternalTraceCleanup || this.isWithinTraceRoot(directory)) {
+      return;
+    }
+    throw new Error(
+      `Refusing destructive cleanup outside the configured trace root: ${directory}. ` +
+      'Set XCTRACE_ANALYZER_ALLOW_EXTERNAL_CLEANUP=1 only for trusted sessions.'
+    );
+  }
+
+  private canDeleteTracePath(tracePath: string): boolean {
+    const resolvedPath = resolve(tracePath);
+    return this.security.allowExternalTraceCleanup ||
+      this.isWithinTraceRoot(resolvedPath) ||
+      this.recordedTracePaths.has(resolvedPath);
+  }
+
+  private isWithinTraceRoot(pathValue: string): boolean {
+    return isPathInside(resolve(pathValue), this.security.traceRoot);
   }
 
   private profilePresetForName(preset: string): ProfilePreset {
@@ -1510,6 +1768,7 @@ export class XCTraceAnalyzerServer {
     instrumentsOpen?: InstrumentsOpenResult;
     workflowWarnings: string[];
   }): string[] {
+    recording = this.safeDisplayValue(recording) as typeof recording;
     const lines = [
       '# Running App Trace Report',
       '',
@@ -1559,6 +1818,7 @@ export class XCTraceAnalyzerServer {
     capabilityWarnings: string[];
     workflowWarnings: string[];
   }): string {
+    profile = this.safeDisplayValue(profile) as typeof profile;
     const lines: string[] = [];
     const failedResults = profile.results.filter((result) => result.error);
     const analyzedResults = profile.results.filter((result) => result.analysis);
@@ -1723,6 +1983,7 @@ export class XCTraceAnalyzerServer {
   }
 
   private formatTraceCleanupOutput(result: TraceCleanupResult): string {
+    result = this.safeDisplayValue(result) as TraceCleanupResult;
     const lines = [
       '# Trace Cleanup Report',
       '',
@@ -2044,6 +2305,7 @@ export class XCTraceAnalyzerServer {
    * Format analysis output for human readability
    */
   private formatAnalysisOutput(analysis: Analysis): string {
+    analysis = this.safeDisplayValue(analysis) as Analysis;
     const lines: string[] = [];
 
     lines.push('# Performance Analysis Report');
@@ -2169,6 +2431,7 @@ export class XCTraceAnalyzerServer {
    * Format comparison output
    */
   private formatComparisonOutput(comparison: Comparison): string {
+    comparison = this.safeDisplayValue(comparison) as Comparison;
     const lines: string[] = [];
 
     lines.push('# Trace Comparison Report');
@@ -2232,6 +2495,96 @@ export class XCTraceAnalyzerServer {
 
     console.error('Xcode Instruments Trace Analyzer MCP Server running on stdio');
   }
+}
+
+function resolveSecurityOptions(options: XCTraceAnalyzerSecurityOptions): ResolvedSecurityOptions {
+  const maxDurationSeconds =
+    options.maxDurationSeconds ??
+    envPositiveNumber('XCTRACE_ANALYZER_MAX_DURATION_SECONDS') ??
+    DEFAULT_MAX_DURATION_SECONDS;
+
+  if (!Number.isFinite(maxDurationSeconds) || maxDurationSeconds <= 0) {
+    throw new Error('maxDurationSeconds must be a positive number');
+  }
+
+  return {
+    allowLaunchProfiling: options.allowLaunchProfiling ?? envFlag('XCTRACE_ANALYZER_ALLOW_LAUNCH') ?? false,
+    allowAllProcessesProfiling:
+      options.allowAllProcessesProfiling ?? envFlag('XCTRACE_ANALYZER_ALLOW_ALL_PROCESSES') ?? false,
+    allowExternalTraceOutput:
+      options.allowExternalTraceOutput ?? envFlag('XCTRACE_ANALYZER_ALLOW_EXTERNAL_OUTPUT') ?? false,
+    allowExternalTraceCleanup:
+      options.allowExternalTraceCleanup ?? envFlag('XCTRACE_ANALYZER_ALLOW_EXTERNAL_CLEANUP') ?? false,
+    traceRoot: resolve(options.traceRoot ?? process.env.XCTRACE_ANALYZER_TRACE_ROOT ?? DEFAULT_TRACE_ROOT),
+    maxDurationSeconds,
+    redaction: options.redaction ?? envRedactionMode() ?? 'balanced',
+  };
+}
+
+function envFlag(name: string): boolean | undefined {
+  const value = process.env[name];
+  if (value === undefined) {
+    return undefined;
+  }
+  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
+}
+
+function envPositiveNumber(name: string): number | undefined {
+  const value = process.env[name];
+  if (value === undefined || value.trim() === '') {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function envRedactionMode(): RedactionMode | undefined {
+  const value = process.env.XCTRACE_ANALYZER_REDACTION?.trim().toLowerCase();
+  if (value === 'balanced' || value === 'strict' || value === 'off') {
+    return value;
+  }
+  return undefined;
+}
+
+function isPathInside(pathValue: string, root: string): boolean {
+  const relation = relative(root, pathValue);
+  return relation === '' || (!!relation && !relation.startsWith('..') && !isAbsolute(relation));
+}
+
+function codeFenceFor(value: string): string {
+  const maxBackticks = Math.max(0, ...Array.from(value.matchAll(/`+/g), (match) => match[0].length));
+  return '`'.repeat(Math.max(3, maxBackticks + 1));
+}
+
+function redactText(value: string, mode: RedactionMode, collapseWhitespace: boolean): string {
+  let output = value.replace(/\r\n?/g, '\n');
+  output = output.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ' ');
+
+  if (mode !== 'off') {
+    output = output
+      .replace(/\/Users\/[^/\s]+/g, '/Users/<redacted>')
+      .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer <redacted>')
+      .replace(
+        /([?&][^=\s&]*(?:token|secret|password|key|authorization)[^=\s&]*=)[^&\s]+/gi,
+        '$1<redacted>'
+      )
+      .replace(
+        /\b((?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|secret|password|authorization)\s*[:=]\s*)(["']?)[^"',\s)]+/gi,
+        '$1$2<redacted>'
+      );
+  }
+
+  if (mode === 'strict') {
+    output = output
+      .replace(/\bhttps?:\/\/[^/\s?#]+/gi, 'https://<host-redacted>')
+      .replace(/\b[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, '<host-redacted>');
+  }
+
+  if (collapseWhitespace) {
+    output = output.replace(/\s+/g, ' ').replace(/```/g, "'''").trim();
+  }
+
+  return output;
 }
 
 function isMainModule(): boolean {

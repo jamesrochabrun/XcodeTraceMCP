@@ -18,6 +18,8 @@ const EXPORT_TOC_TIMEOUT_MS = 30_000;
 const EXPORT_TABLE_TIMEOUT_MS = 60_000;
 const EXPORT_HAR_TIMEOUT_MS = 30_000;
 const SYMBOLICATE_TIMEOUT_MS = 60_000;
+const MAX_EXPORT_FILE_BYTES = 50 * 1024 * 1024;
+const MAX_HAR_FILE_BYTES = 25 * 1024 * 1024;
 
 async function runXcrun(args: string[], timeout?: number): Promise<string> {
   const { stdout } = await execFileAsync('xcrun', args, {
@@ -78,7 +80,8 @@ function runXcrunRaw(args: string[], timeout?: number): Promise<XcrunRawResult> 
 async function runXcrunWithOutputFile(
   args: string[],
   extension: string,
-  timeout?: number
+  timeout?: number,
+  maxBytes: number = MAX_EXPORT_FILE_BYTES
 ): Promise<string> {
   const tempDir = await mkdtemp(join(tmpdir(), 'xctrace-export-'));
   const outputPath = join(tempDir, `export.${extension}`);
@@ -89,6 +92,7 @@ async function runXcrunWithOutputFile(
       timeout: timeout ?? DEFAULT_COMMAND_TIMEOUT_MS,
       killSignal: 'SIGKILL',
     });
+    await assertReadableExportSize(outputPath, maxBytes);
     return (await readFile(outputPath, 'utf8')).trimEnd();
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -98,7 +102,8 @@ async function runXcrunWithOutputFile(
 async function runXcrunWithOutputDirectory(
   args: string[],
   extension: string,
-  timeout?: number
+  timeout?: number,
+  maxBytes: number = MAX_EXPORT_FILE_BYTES
 ): Promise<string> {
   const tempDir = await mkdtemp(join(tmpdir(), 'xctrace-export-'));
 
@@ -113,9 +118,20 @@ async function runXcrunWithOutputDirectory(
     if (!outputFile) {
       return '';
     }
-    return (await readFile(join(tempDir, outputFile), 'utf8')).trimEnd();
+    const outputPath = join(tempDir, outputFile);
+    await assertReadableExportSize(outputPath, maxBytes);
+    return (await readFile(outputPath, 'utf8')).trimEnd();
   } finally {
     await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function assertReadableExportSize(path: string, maxBytes: number): Promise<void> {
+  const stats = await stat(path);
+  if (stats.size > maxBytes) {
+    throw new XCTraceError(
+      `xctrace export exceeded the ${Math.round(maxBytes / 1024 / 1024)} MB safety limit: ${path}`
+    );
   }
 }
 
@@ -265,7 +281,7 @@ export async function exportTable(
   schema: string,
   runNumber: number = 1
 ): Promise<string> {
-  const xpath = `/trace-toc/run[@number="${runNumber}"]/data/table[@schema="${schema}"]`;
+  const xpath = `/trace-toc/run[@number="${runNumber}"]/data/table[@schema=${xpathStringLiteral(schema)}]`;
 
   try {
     return await exportXPath(tracePath, xpath);
@@ -286,7 +302,8 @@ export async function exportHAR(tracePath: string): Promise<string> {
     return await runXcrunWithOutputDirectory(
       ['xctrace', 'export', '--input', tracePath, '--har'],
       'har',
-      EXPORT_HAR_TIMEOUT_MS
+      EXPORT_HAR_TIMEOUT_MS,
+      MAX_HAR_FILE_BYTES
     );
   } catch (error: any) {
     throw new XCTraceError(
@@ -295,6 +312,19 @@ export async function exportHAR(tracePath: string): Promise<string> {
       error.stderr
     );
   }
+}
+
+function xpathStringLiteral(value: string): string {
+  if (!value.includes('"')) {
+    return `"${value}"`;
+  }
+  if (!value.includes("'")) {
+    return `'${value}'`;
+  }
+  const parts = value.split("'").flatMap((part, index) =>
+    index === 0 ? [`'${part}'`] : [`"'"`, `'${part}'`]
+  );
+  return `concat(${parts.join(', ')})`;
 }
 
 /**

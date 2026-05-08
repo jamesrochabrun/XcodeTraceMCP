@@ -290,6 +290,43 @@ describe('TraceParser multi-instrument support', () => {
     );
   });
 
+  it('skips oversized HAR exports instead of processing unbounded entries', async () => {
+    const parser = new TraceParser({
+      exportTOC: async () => `
+        <trace-toc>
+          <run number="1">
+            <duration>2s</duration>
+            <data>
+              <table schema="network-connections"/>
+            </data>
+          </run>
+        </trace-toc>
+      `,
+      exportTable: async () => '',
+      exportHAR: async () =>
+        JSON.stringify({
+          log: {
+            entries: Array.from({ length: 25_001 }, () => ({
+              request: { url: 'https://har.example.com/users', bodySize: 100 },
+              response: { status: 200, bodySize: 900 },
+            })),
+          },
+        }),
+    });
+
+    const trace = await parser.parseTrace('packages/core/package.json');
+
+    expect(trace.exportAttempts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'har',
+          status: 'failed',
+          message: expect.stringContaining('entry safety limit'),
+        }),
+      ])
+    );
+  });
+
   it('does not raw-export CFNetwork internal schemas when HAR is unavailable', async () => {
     const exportedSchemas: string[] = [];
     const parser = new TraceParser({

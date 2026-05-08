@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { XCTraceAnalyzerServer } from '../src/index.js';
 import { Analysis, Comparison, RecordOptions } from '@xctrace-analyzer/core';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 function analysis(overrides: Partial<Analysis> = {}): Analysis {
   return {
@@ -71,104 +74,16 @@ function comparison(overrides: Partial<Comparison> = {}): Comparison {
   };
 }
 
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 describe('XCTraceAnalyzerServer', () => {
-  it('suggests a concrete profiling workflow for vague profile requests', async () => {
-    const server = new XCTraceAnalyzerServer({
-      analyzeTraceFile: async () => analysis(),
-      compareTraceFiles: async () => comparison(),
-      listTemplates: async () => ['Time Profiler', 'Allocations', 'Leaks'],
-      listDevices: async () => [],
-      isXCTraceAvailable: async () => true,
-      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
-      recordTrace: async () => {},
-      getXCTraceCapabilities: async () => ({
-        available: true,
-        version: 'xctrace version 16.0 (17E192)',
-        templates: ['Time Profiler', 'Allocations', 'Leaks'],
-        devices: ['MacBook Pro'],
-        instruments: [],
-        exportModes: ['toc', 'xpath', 'har'],
-        recordModes: ['attach', 'launch', 'all-processes'],
-        supportsSymbolication: true,
-        warnings: [],
-      }),
-    });
-
-    const result = await server.callTool('profile_advisor', {
-      request: 'lets profile my app',
-      processName: 'MyApp',
-    });
-
-    expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toContain('# Profiling Advisor');
-    expect(result.content[0].text).toContain('Use `profile_running_app`: Full performance report.');
-    expect(result.content[0].text).toContain('"processName": "MyApp"');
-    expect(result.content[0].text).toContain('"preset": "full"');
-    expect(result.content[0].text).toContain('## Workflow Notes');
-    expect(result.content[0].text).toContain('Default recording duration is 60s');
-    expect(result.content[0].text).toContain('rerun with the exact PID as processName');
-  });
-
-  it('warns launch profiling users about saved but non-exportable traces', async () => {
-    const server = new XCTraceAnalyzerServer({
-      analyzeTraceFile: async () => analysis(),
-      compareTraceFiles: async () => comparison(),
-      listTemplates: async () => ['Time Profiler'],
-      listDevices: async () => [],
-      isXCTraceAvailable: async () => true,
-      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
-      recordTrace: async () => {},
-      getXCTraceCapabilities: async () => ({
-        available: true,
-        version: 'xctrace version 16.0 (17E192)',
-        templates: ['Time Profiler'],
-        devices: ['MacBook Pro'],
-        instruments: [],
-        exportModes: ['toc', 'xpath', 'har'],
-        recordModes: ['attach', 'launch', 'all-processes'],
-        supportsSymbolication: true,
-        warnings: [],
-      }),
-    });
-
-    const result = await server.callTool('profile_advisor', {
-      request: 'profile launch performance',
-      launchCommand: '/tmp/MyApp.app',
-      outputFormat: 'json',
-    });
-    const payload = JSON.parse(result.content[0].text);
-
-    expect(payload.target.mode).toBe('launch');
-    expect(payload.workflowNotes).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining('Do not select launch mode just because a built .app path exists'),
-        expect.stringContaining('Document Missing Template Error'),
-      ])
-    );
-  });
-
-  it('suggests analyze_trace when an existing trace path is provided', async () => {
-    const server = new XCTraceAnalyzerServer({
-      analyzeTraceFile: async () => analysis(),
-      compareTraceFiles: async () => comparison(),
-      listTemplates: async () => [],
-      listDevices: async () => [],
-      isXCTraceAvailable: async () => true,
-      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
-      recordTrace: async () => {},
-    });
-
-    const result = await server.callTool('profile_advisor', {
-      request: 'analyze this trace',
-      tracePath: '/tmp/app.trace',
-      outputFormat: 'json',
-    });
-    const payload = JSON.parse(result.content[0].text);
-
-    expect(payload.recommended.tool).toBe('analyze_trace');
-    expect(payload.recommended.arguments.tracePath).toBe('/tmp/app.trace');
-  });
-
   it('formats analysis output with clear slow function statistics', async () => {
     const server = new XCTraceAnalyzerServer({
       analyzeTraceFile: async () => analysis(),
@@ -188,6 +103,104 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain('- Slow functions: 2');
     expect(result.content[0].text).not.toContain('Slow functions (>2): 2');
+  });
+
+  it('renders Time Profiler parse failures and export diagnostics for analyze_trace', async () => {
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () =>
+        analysis({
+          stats: {
+            ...analysis().stats,
+            totalTime: 2500,
+            slowFunctions: 0,
+            avgFunctionTime: 0,
+            maxFunctionTime: 0,
+            threadCount: 0,
+            timeProfileError: 'Unexpected close tag',
+          },
+          summary: 'Time Profiler analysis failed: Unexpected close tag.',
+          supportStatus: [
+            {
+              kind: 'time-profile',
+              status: 'not_exportable',
+              reason: 'xctrace exposed time-profile schemas, but no usable rows were exported: Unexpected close tag',
+              sourceSchemas: ['time-profile'],
+            },
+          ],
+          exportAttempts: [
+            {
+              kind: 'time-profile',
+              status: 'failed',
+              schema: 'time-profile',
+              message: 'Unexpected close tag',
+            },
+          ],
+        }),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    const result = await server.callTool('analyze_trace', {
+      tracePath: '/tmp/app.trace',
+    });
+
+    const text = result.content[0].text;
+    expect(text).toContain('- Time Profiler: failed to parse - Unexpected close tag. The trace itself was recorded; this is an analyzer error.');
+    expect(text).toContain('## Export Diagnostics');
+    expect(text).toContain('- time-profile: failed - Unexpected close tag');
+    expect(text).not.toContain('- Threads used: 0');
+  });
+
+  it('passes timeRangeMs to analyze_trace and renders the scoped analysis window', async () => {
+    let receivedOptions: unknown;
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async (_tracePath, options) => {
+        receivedOptions = options;
+        return analysis({
+          stats: {
+            ...analysis().stats,
+            totalTime: 5000,
+            timeRangeMs: { startMs: 2000, endMs: 7000 },
+          },
+          summary: 'Scoped analysis found useful data.',
+          userFrameProfiles: [
+            {
+              module: 'AgentHub',
+              name: 'MyView.body',
+              selfTime: 125,
+              sampleCount: 3,
+              percentage: 2.5,
+            },
+          ],
+        });
+      },
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    const result = await server.callTool('analyze_trace', {
+      tracePath: '/tmp/app.trace',
+      timeRangeMs: { startMs: 2000, endMs: 7000 },
+      userBinaryHints: ['AgentHub'],
+    });
+
+    expect(receivedOptions).toEqual(
+      expect.objectContaining({
+        timeRangeMs: { startMs: 2000, endMs: 7000 },
+        userBinaryHints: ['AgentHub'],
+      })
+    );
+    expect(result.content[0].text).toContain('**Analysis window:** 00:02.000-00:07.000 (5.00 s)');
+    expect(result.content[0].text).toContain('## Top User-Code Frames');
+    expect(result.content[0].text).toContain('- AgentHub`MyView.body: 125ms (2.5%, 3 samples)');
   });
 
   it('renders a Hangs section when the analysis includes hang events', async () => {
@@ -327,6 +340,133 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).toContain('xctrace is available');
     expect(result.content[0].text).toContain('xctrace version 16.0 (17E192)');
     expect(result.content[0].text).toContain('Capabilities:');
+  });
+
+  it('previews exact trace cleanup by default', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'xctrace-cleanup-'));
+    const tracePath = join(tempDir, 'Preview.trace');
+    await mkdir(join(tracePath, 'run_data'), { recursive: true });
+    await writeFile(join(tracePath, 'run_data', 'data.bin'), 'trace payload');
+
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () => analysis(),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    try {
+      const result = await server.callTool('cleanup_traces', {
+        tracePaths: [tracePath],
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(result.content[0].text).toContain('# Trace Cleanup Report');
+      expect(result.content[0].text).toContain('- Mode: preview');
+      expect(result.content[0].text).toContain(`would_delete: ${tracePath}`);
+      expect(result.content[0].text).toContain('No files were deleted');
+      expect(await pathExists(tracePath)).toBe(true);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('deletes exact trace paths when cleanup is confirmed', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'xctrace-cleanup-'));
+    const tracePath = join(tempDir, 'DeleteMe.trace');
+    await mkdir(tracePath, { recursive: true });
+    await writeFile(join(tracePath, 'data.bin'), 'trace payload');
+
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () => analysis(),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    try {
+      const result = await server.callTool('cleanup_traces', {
+        tracePaths: [tracePath],
+        dryRun: false,
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(result.content[0].text).toContain('- Mode: delete');
+      expect(result.content[0].text).toContain(`deleted: ${tracePath}`);
+      expect(await pathExists(tracePath)).toBe(false);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('requires an age filter for destructive directory cleanup', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'xctrace-cleanup-'));
+    const tracePath = join(tempDir, 'Directory.trace');
+    await mkdir(tracePath, { recursive: true });
+
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () => analysis(),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    try {
+      const result = await server.callTool('cleanup_traces', {
+        directory: tempDir,
+        dryRun: false,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('Refusing to delete a directory scan');
+      expect(await pathExists(tracePath)).toBe(true);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('deletes directory-scanned traces only when an age filter is present', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'xctrace-cleanup-'));
+    const tracePath = join(tempDir, 'Old.trace');
+    const nonTracePath = join(tempDir, 'NotATrace');
+    await mkdir(tracePath, { recursive: true });
+    await mkdir(nonTracePath, { recursive: true });
+    await writeFile(join(tracePath, 'data.bin'), 'trace payload');
+
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () => analysis(),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    try {
+      const result = await server.callTool('cleanup_traces', {
+        directory: tempDir,
+        olderThanMinutes: 0,
+        dryRun: false,
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(result.content[0].text).toContain('- Scope: directory scan:');
+      expect(result.content[0].text).toContain(`deleted: ${tracePath}`);
+      expect(await pathExists(tracePath)).toBe(false);
+      expect(await pathExists(nonTracePath)).toBe(true);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('returns concise tool errors without stack traces', async () => {
@@ -559,6 +699,7 @@ describe('XCTraceAnalyzerServer', () => {
 
   it('records a running app and analyzes the captured trace', async () => {
     let recordOptions: RecordOptions | undefined;
+    const openedTraces: string[] = [];
 
     const server = new XCTraceAnalyzerServer({
       analyzeTraceFile: async (tracePath) =>
@@ -594,6 +735,9 @@ describe('XCTraceAnalyzerServer', () => {
       recordTrace: async (options) => {
         recordOptions = options;
       },
+      openTrace: async (tracePath) => {
+        openedTraces.push(tracePath);
+      },
     });
 
     const result = await server.callTool('track_running_app', {
@@ -611,11 +755,13 @@ describe('XCTraceAnalyzerServer', () => {
       device: 'iPhone 16 Pro Simulator',
       outputPath: '/tmp/MyApp-leaks.trace',
     });
+    expect(openedTraces).toEqual(['/tmp/MyApp-leaks.trace']);
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain('# Running App Trace Report');
     expect(result.content[0].text).toContain('- Target: attach: MyApp');
     expect(result.content[0].text).toContain('- Template: Leaks');
     expect(result.content[0].text).toContain('- Trace: /tmp/MyApp-leaks.trace');
+    expect(result.content[0].text).toContain('- Instruments.app: opened');
     expect(result.content[0].text).toContain('## Workflow Warnings');
     expect(result.content[0].text).toContain('not a PID');
     expect(result.content[0].text).toContain('### Leaks Analysis');
@@ -624,6 +770,7 @@ describe('XCTraceAnalyzerServer', () => {
 
   it('records a launched target with arguments and environment', async () => {
     let recordOptions: RecordOptions | undefined;
+    const openedTraces: string[] = [];
 
     const server = new XCTraceAnalyzerServer({
       analyzeTraceFile: async () => analysis(),
@@ -635,6 +782,9 @@ describe('XCTraceAnalyzerServer', () => {
       recordTrace: async (options) => {
         recordOptions = options;
       },
+      openTrace: async (tracePath) => {
+        openedTraces.push(tracePath);
+      },
     });
 
     const result = await server.callTool('track_running_app', {
@@ -645,6 +795,7 @@ describe('XCTraceAnalyzerServer', () => {
       template: 'Allocations',
       durationSeconds: 5,
       outputPath: '/tmp/MyTool.trace',
+      openInInstruments: false,
       analyze: false,
     });
 
@@ -658,14 +809,45 @@ describe('XCTraceAnalyzerServer', () => {
       duration: 5,
       outputPath: '/tmp/MyTool.trace',
     });
+    expect(openedTraces).toEqual([]);
     expect(result.content[0].text).toContain('- Target: launch: /tmp/MyTool');
+    expect(result.content[0].text).not.toContain('Instruments.app: opened');
     expect(result.content[0].text).toContain('## Workflow Warnings');
     expect(result.content[0].text).toContain('startup/cold-launch behavior');
     expect(result.content[0].text).toContain('Analysis skipped.');
   });
 
+  it('reports Instruments.app open failures without failing the recording', async () => {
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () => analysis(),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+      openTrace: async () => {
+        throw new Error('LaunchServices denied open');
+      },
+    });
+
+    const result = await server.callTool('track_running_app', {
+      processName: '123',
+      template: 'Leaks',
+      outputPath: '/tmp/MyApp-leaks.trace',
+      analyze: false,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain(
+      '- Instruments.app: failed to open - LaunchServices denied open'
+    );
+    expect(result.content[0].text).toContain('Analysis skipped.');
+  });
+
   it('profiles a running app with the full preset and returns one combined report', async () => {
     const recordOptions: RecordOptions[] = [];
+    const openedTraces: string[] = [];
 
     const server = new XCTraceAnalyzerServer({
       analyzeTraceFile: async (tracePath) =>
@@ -715,6 +897,9 @@ describe('XCTraceAnalyzerServer', () => {
       recordTrace: async (options) => {
         recordOptions.push(options);
       },
+      openTrace: async (tracePath) => {
+        openedTraces.push(tracePath);
+      },
     });
 
     const result = await server.callTool('profile_running_app', {
@@ -733,6 +918,8 @@ describe('XCTraceAnalyzerServer', () => {
         outputPath: expect.stringContaining('/tmp/profiles/MyApp-full-'),
       }),
     ]);
+    expect(openedTraces).toHaveLength(1);
+    expect(openedTraces[0]).toContain('/tmp/profiles/MyApp-full-');
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain('# Profiling Report');
     expect(result.content[0].text).toContain('- Target: attach: MyApp');
@@ -743,6 +930,7 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).toContain('- Recording strategy: combined');
     expect(result.content[0].text).toContain('- Base template: Time Profiler');
     expect(result.content[0].text).toContain('- Instruments: Leaks, Allocations, HTTP Traffic');
+    expect(result.content[0].text).toContain('- Instruments.app: opened');
     expect(result.content[0].text).toContain('## CPU / Time Profiler');
     expect(result.content[0].text).toContain('ImageProcessor.resize');
     expect(result.content[0].text).toContain('## Leaks');
@@ -750,6 +938,113 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).toContain('## Network');
     expect(result.content[0].text).toContain('Network failures detected');
     expect(result.content[0].text).toContain('## Prioritized Recommendations');
+  });
+
+  it('treats severe hangs as critical findings in combined profile reports', async () => {
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async (tracePath) =>
+        analysis({
+          metadata: {
+            ...analysis().metadata,
+            filePath: tracePath,
+          },
+          stats: {
+            ...analysis().stats,
+            slowFunctions: 0,
+            avgFunctionTime: 10,
+            maxFunctionTime: 10,
+          },
+          bottlenecks: [],
+          summary: '⚠️ 1 severe hang on the main thread (longest 4.71s). No Time Profiler CPU functions crossed the bottleneck threshold.',
+          hangs: {
+            events: [
+              {
+                startMs: 5644,
+                durationMs: 4710,
+                hangType: 'Severe Hang',
+                threadName: 'Main Thread (AgentHub)',
+                processName: 'AgentHub',
+                schemaSource: 'potential-hangs',
+              },
+            ],
+            totalHangMs: 4710,
+            severeCount: 1,
+            hangCount: 0,
+            microhangCount: 0,
+            longestMs: 4710,
+            sourceSchemas: ['potential-hangs'],
+          },
+        }),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    const result = await server.callTool('profile_running_app', {
+      processName: 'AgentHub',
+      preset: 'cpu',
+      durationSeconds: 5,
+      outputDirectory: '/tmp/profiles',
+    });
+
+    const text = result.content[0].text;
+    expect(text).toContain('- Overall status: critical issues found');
+    expect(text).toContain('No Time Profiler CPU functions crossed the bottleneck threshold.');
+    expect(text).toContain('## Hangs');
+    expect(text).toContain('critical Main-thread hangs: 1 hang detected (1 severe)');
+    expect(text).not.toContain('No high-priority recommendations found');
+  });
+
+  it('renders Time Profiler parse failures and export diagnostics in combined profile reports', async () => {
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async (tracePath) =>
+        analysis({
+          metadata: {
+            ...analysis().metadata,
+            fileName: 'MyApp-full.trace',
+            filePath: tracePath,
+          },
+          stats: {
+            ...analysis().stats,
+            slowFunctions: 0,
+            avgFunctionTime: 0,
+            maxFunctionTime: 0,
+            threadCount: 0,
+            timeProfileError: 'Unexpected close tag',
+          },
+          bottlenecks: [],
+          summary: 'Time Profiler analysis failed: Unexpected close tag.',
+          exportAttempts: [
+            {
+              kind: 'time-profile',
+              status: 'failed',
+              schema: 'time-profile',
+              message: 'Unexpected close tag',
+            },
+          ],
+        }),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    const result = await server.callTool('profile_running_app', {
+      processName: 'MyApp',
+      preset: 'cpu',
+      durationSeconds: 5,
+      outputDirectory: '/tmp/profiles',
+    });
+
+    const text = result.content[0].text;
+    expect(text).toContain('**Time Profiler:** failed to parse - Unexpected close tag. The trace itself was recorded; this is an analyzer error.');
+    expect(text).toContain('## Export Diagnostics');
+    expect(text).toContain('- time-profile: failed - Unexpected close tag');
   });
 
   it('keeps Power Profiler in the iOS combined preset and reports unsupported-instrument errors', async () => {

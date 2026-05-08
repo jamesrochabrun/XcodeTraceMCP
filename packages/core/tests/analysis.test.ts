@@ -88,6 +88,204 @@ describe('PerformanceAnalyzer', () => {
     expect(analysis.summary).toContain('Document Missing Template Error');
     expect(analysis.summary).not.toContain('No significant performance bottlenecks detected');
   });
+
+  it('surfaces Time Profiler parse failures in stats and summary', () => {
+    const analysis = new PerformanceAnalyzer().analyze({
+      metadata: {
+        fileName: 'parse-failed.trace',
+        filePath: '/tmp/parse-failed.trace',
+        duration: 2500,
+        template: 'Time Profiler',
+      },
+      exportAttempts: [
+        {
+          kind: 'time-profile',
+          status: 'failed',
+          schema: 'time-profile',
+          message: 'Unexpected close tag',
+        },
+      ],
+    });
+
+    expect(analysis.stats.timeProfileError).toBe('Unexpected close tag');
+    expect(analysis.summary).toContain('Time Profiler analysis failed: Unexpected close tag');
+    expect(analysis.summary).toContain('Time Profiler totals are unavailable');
+    expect(analysis.summary).not.toContain('No significant performance bottlenecks detected');
+  });
+
+  it('does not describe severe hangs as no significant performance bottlenecks', () => {
+    const trace = parsedTrace([{ name: 'LightWork', selfTime: 5 }]);
+    const analysis = new PerformanceAnalyzer().analyze(
+      {
+        ...trace,
+        hangs: {
+          events: [
+            {
+              startMs: 1000,
+              durationMs: 6160,
+              hangType: 'Severe Hang',
+              threadName: 'Main Thread',
+              schemaSource: 'potential-hangs',
+            },
+            {
+              startMs: 8000,
+              durationMs: 900,
+              hangType: 'Severe Hang',
+              threadName: 'Main Thread',
+              schemaSource: 'potential-hangs',
+            },
+          ],
+          totalHangMs: 7060,
+          severeCount: 2,
+          hangCount: 0,
+          microhangCount: 0,
+          longestMs: 6160,
+          sourceSchemas: ['potential-hangs'],
+        },
+      },
+      { slowThreshold: 100, topN: 5 }
+    );
+
+    expect(analysis.bottlenecks).toHaveLength(0);
+    expect(analysis.summary).toContain('⚠️ 2 severe hangs on the main thread (longest 6.16s).');
+    expect(analysis.summary).toContain('No Time Profiler CPU functions crossed the bottleneck threshold.');
+    expect(analysis.summary).not.toContain('✅ No significant performance bottlenecks detected.');
+  });
+
+  it('aggregates deepest matching user-binary frames from Time Profiler samples', () => {
+    const analysis = new PerformanceAnalyzer().analyze(
+      {
+        metadata: {
+          fileName: 'sample.trace',
+          filePath: '/tmp/sample.trace',
+          duration: 1000,
+          template: 'Time Profiler',
+          userProcessNames: ['AgentHub'],
+        },
+        timeProfile: {
+          totalDuration: 1000,
+          samples: [
+            {
+              timestamp: 100,
+              threadId: 1,
+              weight: 40,
+              backtrace: ['AgentHub`MyView.body', 'SwiftUI`ViewRenderer.render', 'libdispatch`_dispatch_main_queue_callback_4CF'],
+            },
+            {
+              timestamp: 200,
+              threadId: 1,
+              weight: 25,
+              backtrace: ['AgentHub`MyView.body', 'AgentHub`ImageLoader.decode'],
+            },
+            {
+              timestamp: 300,
+              threadId: 1,
+              weight: 10,
+              backtrace: ['SwiftUI`ViewRenderer.render', 'libdispatch`_dispatch_main_queue_callback_4CF'],
+            },
+          ],
+          functionProfiles: [],
+        },
+      },
+      { topN: 10 }
+    );
+
+    expect(analysis.userFrameProfiles).toEqual([
+      expect.objectContaining({
+        module: 'AgentHub',
+        name: 'MyView.body',
+        selfTime: 40,
+        sampleCount: 1,
+        percentage: 4,
+      }),
+      expect.objectContaining({
+        module: 'AgentHub',
+        name: 'ImageLoader.decode',
+        selfTime: 25,
+        sampleCount: 1,
+        percentage: 2.5,
+      }),
+    ]);
+  });
+
+  it('uses userBinaryHints when trace metadata does not identify user processes', () => {
+    const analysis = new PerformanceAnalyzer().analyze(
+      {
+        metadata: {
+          fileName: 'sample.trace',
+          filePath: '/tmp/sample.trace',
+          duration: 1000,
+          template: 'Time Profiler',
+        },
+        timeProfile: {
+          totalDuration: 1000,
+          samples: [
+            {
+              timestamp: 100,
+              threadId: 1,
+              weight: 30,
+              backtrace: ['MyAppCore`Renderer.draw', 'SwiftUI`ViewRenderer.render'],
+            },
+          ],
+          functionProfiles: [],
+        },
+      },
+      { userBinaryHints: ['MyApp'] }
+    );
+
+    expect(analysis.userFrameProfiles).toEqual([
+      expect.objectContaining({
+        module: 'MyAppCore',
+        name: 'Renderer.draw',
+        selfTime: 30,
+      }),
+    ]);
+  });
+
+  it('attributes unqualified Swift app frames when xctrace omits the module name', () => {
+    const analysis = new PerformanceAnalyzer().analyze(
+      {
+        metadata: {
+          fileName: 'hang.trace',
+          filePath: '/tmp/hang.trace',
+          duration: 1000,
+          template: 'Time Profiler',
+          processName: 'AgentHub',
+        },
+        timeProfile: {
+          totalDuration: 1000,
+          samples: [
+            {
+              timestamp: 533,
+              threadId: 1,
+              weight: 50,
+              backtrace: [
+                '__CFFromUTF8',
+                'newJSONValue',
+                'newJSONObject',
+                '-[_NSJSONReader parseData:options:error:]',
+                'closure #1 in CLISessionMonitorService.readSessionMetadataBatch(_:)',
+                'partial apply for closure #1 in CLISessionMonitorService.readSessionMetadataBatch(_:)',
+                'thunk for @escaping @isolated(any) @callee_guaranteed @async () -> (@out A)',
+                'completeTaskWithClosure(swift::AsyncContext*, swift::SwiftError*)',
+              ],
+            },
+          ],
+          functionProfiles: [],
+        },
+      },
+      { topN: 5 }
+    );
+
+    expect(analysis.userFrameProfiles).toEqual([
+      expect.objectContaining({
+        module: undefined,
+        name: 'closure #1 in CLISessionMonitorService.readSessionMetadataBatch(_:)',
+        selfTime: 50,
+        sampleCount: 1,
+      }),
+    ]);
+  });
 });
 
 describe('ComparativeAnalyzer', () => {
@@ -144,6 +342,31 @@ describe('analyzeTraceFile', () => {
 
     expect(analysis.bottlenecks).toHaveLength(1);
     expect(analysis.recommendations).toEqual([]);
+
+    vi.doUnmock('../src/parser/trace-parser.js');
+  });
+
+  it('passes timeRangeMs to the parser and keeps it in stats', async () => {
+    vi.resetModules();
+    const parseTraceMock = vi.fn(async () =>
+      parsedTrace([{ name: 'ScopedWork', selfTime: 50, totalTime: 50 }])
+    );
+    vi.doMock('../src/parser/trace-parser.js', () => ({
+      TraceParser: class {},
+      parseTrace: parseTraceMock,
+    }));
+
+    const { analyzeTraceFile } = await import('../src/index.js');
+
+    const analysis = await analyzeTraceFile('/tmp/app.trace', {
+      timeRangeMs: { startMs: 2000, endMs: 7000 },
+      includeRecommendations: false,
+    });
+
+    expect(parseTraceMock).toHaveBeenCalledWith('/tmp/app.trace', {
+      timeRangeMs: { startMs: 2000, endMs: 7000 },
+    });
+    expect(analysis.stats.timeRangeMs).toEqual({ startMs: 2000, endMs: 7000 });
 
     vi.doUnmock('../src/parser/trace-parser.js');
   });

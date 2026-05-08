@@ -8,7 +8,7 @@
 export * from './types.js';
 
 // Export parser
-export { TraceParser, parseTrace, type TraceExporter } from './parser/trace-parser.js';
+export { TraceParser, parseTrace, type TraceExporter, type TraceParserOptions } from './parser/trace-parser.js';
 
 // Export analyzers
 export { PerformanceAnalyzer, analyzeTrace } from './analyzer/performance-analyzer.js';
@@ -31,7 +31,10 @@ export async function analyzeTraceFile(
   options?: AnalysisOptions
 ): Promise<Analysis> {
   // Parse the trace
-  const parsed = await parseTrace(tracePath);
+  const parsed = await parseTrace(
+    tracePath,
+    options?.timeRangeMs ? { timeRangeMs: options.timeRangeMs } : undefined
+  );
 
   // Analyze it
   const analysis = analyzeTrace(parsed, options);

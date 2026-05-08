@@ -8,7 +8,8 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { mkdir, mkdtemp } from 'fs/promises';
+import { execFile as execFileCallback } from 'child_process';
+import { lstat, mkdir, mkdtemp, readdir, rm } from 'fs/promises';
 import { tmpdir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
@@ -34,6 +35,7 @@ import {
   Comparison,
   ComparisonOptions,
   RecordOptions,
+  TimeRangeMs,
   XCTraceCapabilities,
 } from '@xctrace-analyzer/core';
 
@@ -47,6 +49,19 @@ export interface XCTraceAnalyzerDependencies {
   getXCTraceCapabilities?: typeof defaultGetXCTraceCapabilities;
   recordTrace: typeof defaultRecordTrace;
   symbolicateTrace?: typeof defaultSymbolicateTrace;
+  openTrace?: (tracePath: string) => Promise<void>;
+}
+
+function defaultOpenTrace(tracePath: string): Promise<void> {
+  return new Promise((resolveOpen, rejectOpen) => {
+    execFileCallback('open', [tracePath], (error) => {
+      if (error) {
+        rejectOpen(error);
+        return;
+      }
+      resolveOpen();
+    });
+  });
 }
 
 const defaultDependencies: XCTraceAnalyzerDependencies = {
@@ -59,6 +74,7 @@ const defaultDependencies: XCTraceAnalyzerDependencies = {
   getXCTraceCapabilities: defaultGetXCTraceCapabilities,
   recordTrace: defaultRecordTrace,
   symbolicateTrace: defaultSymbolicateTrace,
+  openTrace: defaultOpenTrace,
 };
 
 const passthroughJsonSchemaValidator: jsonSchemaValidator = {
@@ -91,11 +107,38 @@ const PROFILE_PRESETS: Record<string, ProfilePreset> = {
 interface ProfileTraceResult {
   template: string;
   tracePath: string;
+  instrumentsOpen?: InstrumentsOpenResult;
   analysis?: Analysis;
   error?: string;
 }
 
 type OutputFormat = 'markdown' | 'json' | 'both';
+
+interface InstrumentsOpenResult {
+  status: 'opened' | 'failed';
+  error?: string;
+}
+
+interface TraceCleanupEntry {
+  path: string;
+  status: 'would_delete' | 'deleted' | 'skipped' | 'failed';
+  sizeBytes?: number;
+  modifiedAt?: string;
+  ageMinutes?: number;
+  reason?: string;
+}
+
+interface TraceCleanupResult {
+  dryRun: boolean;
+  scope: string;
+  matchedCount: number;
+  deletedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  reclaimableBytes: number;
+  reclaimedBytes: number;
+  entries: TraceCleanupEntry[];
+}
 
 /**
  * MCP Server for Xcode Instruments trace analysis
@@ -142,54 +185,6 @@ export class XCTraceAnalyzerServer {
   private getTools(): Tool[] {
     return [
       {
-        name: 'profile_advisor',
-        description: 'Use first for vague profiling requests like "profile my app"; suggests the best recording or analysis workflow and exact next tool calls',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            request: {
-              type: 'string',
-              description: 'Natural-language profiling request or goal',
-            },
-            processName: {
-              type: 'string',
-              description: 'Running process name or pid, if known. Prefer a pid when multiple app instances may be running.',
-            },
-            launchCommand: {
-              type: 'string',
-              description: 'Command, app path, or bundle identifier to launch, if startup behavior is the target',
-            },
-            tracePath: {
-              type: 'string',
-              description: 'Existing .trace path, if the user wants analysis rather than recording',
-            },
-            baselinePath: {
-              type: 'string',
-              description: 'Baseline .trace path for regression comparison',
-            },
-            currentPath: {
-              type: 'string',
-              description: 'Current .trace path for regression comparison',
-            },
-            platform: {
-              type: 'string',
-              enum: ['macos', 'ios', 'unknown'],
-              description: 'Target platform, used to choose between full and full-ios presets',
-            },
-            durationSeconds: {
-              type: 'number',
-              description: 'Preferred recording duration in seconds (default: 60)',
-            },
-            outputFormat: {
-              type: 'string',
-              enum: ['markdown', 'json', 'both'],
-              description: 'Response format: markdown, json, or both (default: markdown)',
-            },
-          },
-          required: [],
-        },
-      },
-      {
         name: 'analyze_trace',
         description: 'Analyze an Xcode Instruments trace file for performance bottlenecks and generate recommendations',
         inputSchema: {
@@ -210,6 +205,26 @@ export class XCTraceAnalyzerServer {
             dsymPath: {
               type: 'string',
               description: 'Optional dSYM path or directory. The server symbolicates to a temporary trace before analysis.',
+            },
+            timeRangeMs: {
+              type: 'object',
+              properties: {
+                startMs: {
+                  type: 'number',
+                  description: 'Trace-relative window start in milliseconds',
+                },
+                endMs: {
+                  type: 'number',
+                  description: 'Trace-relative window end in milliseconds',
+                },
+              },
+              required: ['startMs', 'endMs'],
+              description: 'Restrict analysis to a trace-relative window. Useful for asking what ran during a specific hang.',
+            },
+            userBinaryHints: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional app/module names used to attribute Time Profiler samples to user code.',
             },
             outputFormat: {
               type: 'string',
@@ -261,7 +276,7 @@ export class XCTraceAnalyzerServer {
       },
       {
         name: 'track_running_app',
-        description: 'Record one explicit Instruments template. Use this when the user names a template such as Leaks or Allocations; for broad hangs/CPU profiling prefer profile_advisor or profile_running_app.',
+        description: 'Record one explicit Instruments template. Use this when the user names a template such as Leaks or Allocations; for broad hangs/CPU profiling prefer the bundled skill or profile_running_app.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -324,6 +339,10 @@ export class XCTraceAnalyzerServer {
               type: 'boolean',
               description: 'Analyze the trace after recording (default: true)',
             },
+            openInInstruments: {
+              type: 'boolean',
+              description: 'Open the saved .trace in Instruments.app after recording (default: true). Set false for CI or headless runs.',
+            },
             outputFormat: {
               type: 'string',
               enum: ['markdown', 'json', 'both'],
@@ -336,6 +355,11 @@ export class XCTraceAnalyzerServer {
             topN: {
               type: 'number',
               description: 'Number of top functions to show when analyzing Time Profiler data',
+            },
+            userBinaryHints: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional app/module names used to attribute Time Profiler samples to user code.',
             },
           },
           required: [],
@@ -402,6 +426,10 @@ export class XCTraceAnalyzerServer {
               type: 'boolean',
               description: 'Analyze traces after recording (default: true)',
             },
+            openInInstruments: {
+              type: 'boolean',
+              description: 'Open the saved .trace in Instruments.app after recording (default: true). Set false for CI or headless runs.',
+            },
             outputFormat: {
               type: 'string',
               enum: ['markdown', 'json', 'both'],
@@ -414,6 +442,11 @@ export class XCTraceAnalyzerServer {
             topN: {
               type: 'number',
               description: 'Number of top functions to show when analyzing Time Profiler data',
+            },
+            userBinaryHints: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional app/module names used to attribute Time Profiler samples to user code.',
             },
           },
           required: [],
@@ -443,6 +476,42 @@ export class XCTraceAnalyzerServer {
           properties: {},
         },
       },
+      {
+        name: 'cleanup_traces',
+        description: 'Trace garbage collector. Preview or delete .trace bundles after the user is done inspecting profiling results.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            tracePaths: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Exact .trace paths to preview or delete. Safest option after a profiling report.',
+            },
+            directory: {
+              type: 'string',
+              description: 'Directory to scan for .trace bundles when tracePaths is omitted (default: test-traces).',
+            },
+            recursive: {
+              type: 'boolean',
+              description: 'Recursively scan subdirectories for .trace bundles when using directory mode (default: false).',
+            },
+            olderThanMinutes: {
+              type: 'number',
+              description: 'Only match traces older than this many minutes. Required for destructive directory cleanup.',
+            },
+            dryRun: {
+              type: 'boolean',
+              description: 'Preview cleanup without deleting files (default: true). Set false only after the user confirms the traces are no longer needed.',
+            },
+            outputFormat: {
+              type: 'string',
+              enum: ['markdown', 'json', 'both'],
+              description: 'Response format: markdown, json, or both (default: markdown)',
+            },
+          },
+          required: [],
+        },
+      },
     ];
   }
 
@@ -452,9 +521,6 @@ export class XCTraceAnalyzerServer {
   async callTool(toolName: string, args: any): Promise<any> {
     try {
       switch (toolName) {
-        case 'profile_advisor':
-          return await this.profileAdvisor(args);
-
         case 'analyze_trace':
           return await this.analyzeTrace(args);
 
@@ -475,6 +541,9 @@ export class XCTraceAnalyzerServer {
 
         case 'check_xctrace':
           return await this.checkXCTrace();
+
+        case 'cleanup_traces':
+          return await this.cleanupTraces(args);
 
         default:
           throw new Error(`Unknown tool: ${toolName}`);
@@ -508,63 +577,14 @@ export class XCTraceAnalyzerServer {
   }
 
   /**
-   * Suggest the best profiling workflow for vague user requests.
-   */
-  private async profileAdvisor(args: any) {
-    const outputFormat = this.outputFormat(args);
-    const request = this.optionalString(args?.request, 'request') ?? 'Profile my app';
-    const duration = this.optionalPositiveNumber(args?.durationSeconds, 'durationSeconds') ?? 60;
-    const platform = this.optionalString(args?.platform, 'platform') ?? 'unknown';
-    if (!['macos', 'ios', 'unknown'].includes(platform)) {
-      throw new Error('platform must be macos, ios, or unknown');
-    }
-
-    const capabilities = this.deps.getXCTraceCapabilities
-      ? await this.deps.getXCTraceCapabilities()
-      : await this.fallbackCapabilities();
-    const target = this.advisorTarget(args);
-    const intent = this.inferProfilingIntent(request, args);
-    const recommendations = this.advisorRecommendations({
-      args,
-      request,
-      intent,
-      duration,
-      platform,
-      target,
-    });
-    const workflowNotes = this.advisorWorkflowNotes(target);
-
-    const structured = {
-      request,
-      inferredIntent: intent,
-      target,
-      capabilities,
-      recommended: recommendations[0],
-      options: recommendations,
-      workflowNotes,
-    };
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: this.formatToolOutput(
-            this.formatProfileAdvisorOutput(structured),
-            structured,
-            outputFormat
-          ),
-        },
-      ],
-    };
-  }
-
-  /**
    * Analyze a trace file
    */
   private async analyzeTrace(args: any) {
     const { slowThreshold, topN } = args;
     const tracePath = this.requiredString(args?.tracePath, 'tracePath');
     const outputFormat = this.outputFormat(args);
+    const timeRangeMs = this.optionalTimeRangeMs(args?.timeRangeMs);
+    const userBinaryHints = this.optionalStringArray(args?.userBinaryHints, 'userBinaryHints');
     const preparedTracePath = await this.prepareTraceForAnalysis(
       tracePath,
       this.optionalString(args?.dsymPath, 'dsymPath')
@@ -574,6 +594,8 @@ export class XCTraceAnalyzerServer {
       slowThreshold,
       topN,
       includeRecommendations: true,
+      ...(timeRangeMs ? { timeRangeMs } : {}),
+      ...(userBinaryHints ? { userBinaryHints } : {}),
     };
 
     const analysis = await this.deps.analyzeTraceFile(preparedTracePath, options);
@@ -653,6 +675,7 @@ export class XCTraceAnalyzerServer {
     const duration = this.optionalPositiveNumber(args?.durationSeconds, 'durationSeconds') ?? 60;
     const outputFormat = this.outputFormat(args);
     const outputPath = this.traceOutputPath(args, target.fileLabel, template);
+    const openInInstruments = this.optionalBoolean(args?.openInInstruments, 'openInInstruments') ?? true;
 
     await mkdir(dirname(outputPath), { recursive: true });
 
@@ -667,6 +690,7 @@ export class XCTraceAnalyzerServer {
     };
 
     await this.deps.recordTrace(recordOptions);
+    const instrumentsOpen = await this.openTraceInInstruments(outputPath, openInInstruments);
 
     const lines = this.formatTrackingHeader({
       target: target.reportLabel,
@@ -674,6 +698,7 @@ export class XCTraceAnalyzerServer {
       duration,
       device: recordOptions.device,
       outputPath,
+      instrumentsOpen,
       workflowWarnings: target.workflowWarnings,
     });
 
@@ -691,6 +716,7 @@ export class XCTraceAnalyzerServer {
                   template,
                   duration,
                   outputPath,
+                  instrumentsOpen,
                   workflowWarnings: target.workflowWarnings,
                 },
                 analysis: null,
@@ -702,10 +728,12 @@ export class XCTraceAnalyzerServer {
       };
     }
 
+    const userBinaryHints = this.optionalStringArray(args?.userBinaryHints, 'userBinaryHints');
     const options: AnalysisOptions = {
       slowThreshold: args?.slowThreshold,
       topN: args?.topN,
       includeRecommendations: true,
+      ...(userBinaryHints ? { userBinaryHints } : {}),
     };
 
     const analysis = await this.deps.analyzeTraceFile(outputPath, options);
@@ -724,6 +752,7 @@ export class XCTraceAnalyzerServer {
                 template,
                 duration,
                 outputPath,
+                instrumentsOpen,
                 workflowWarnings: target.workflowWarnings,
               },
               ...this.structuredAnalysis(analysis),
@@ -751,9 +780,11 @@ export class XCTraceAnalyzerServer {
       ? this.requiredString(args.device, 'device')
       : undefined;
     const analyze = args?.analyze !== false;
+    const openInInstruments = this.optionalBoolean(args?.openInInstruments, 'openInInstruments') ?? true;
     const startedAt = new Date().toISOString().replace(/[:.]/g, '-');
     const results: ProfileTraceResult[] = [];
     const capabilityWarnings = await this.profileCapabilityWarnings(profilePreset);
+    const userBinaryHints = this.optionalStringArray(args?.userBinaryHints, 'userBinaryHints');
 
     await mkdir(outputDirectory, { recursive: true });
 
@@ -773,16 +804,18 @@ export class XCTraceAnalyzerServer {
         outputPath,
         ...(device ? { device } : {}),
       });
+      const instrumentsOpen = await this.openTraceInInstruments(outputPath, openInInstruments);
 
       const analysis = analyze
         ? await this.deps.analyzeTraceFile(outputPath, {
           slowThreshold: args?.slowThreshold,
           topN: args?.topN,
           includeRecommendations: true,
+          ...(userBinaryHints ? { userBinaryHints } : {}),
         })
         : undefined;
 
-      results.push({ template: profilePreset.template, tracePath: outputPath, analysis });
+      results.push({ template: profilePreset.template, tracePath: outputPath, instrumentsOpen, analysis });
     } catch (error) {
       results.push({
         template: profilePreset.template,
@@ -819,6 +852,7 @@ export class XCTraceAnalyzerServer {
         results: results.map((result) => ({
           template: result.template,
           tracePath: result.tracePath,
+          instrumentsOpen: result.instrumentsOpen,
           error: result.error,
           analysis: result.analysis ? this.structuredAnalysis(result.analysis) : undefined,
         })),
@@ -924,6 +958,76 @@ export class XCTraceAnalyzerServer {
     };
   }
 
+  /**
+   * Preview or delete generated .trace bundles.
+   */
+  private async cleanupTraces(args: any) {
+    const outputFormat = this.outputFormat(args);
+    const dryRun = this.optionalBoolean(args?.dryRun, 'dryRun') ?? true;
+    const tracePaths = this.optionalStringArray(args?.tracePaths, 'tracePaths') ?? [];
+    const directory = this.optionalString(args?.directory, 'directory');
+    const recursive = this.optionalBoolean(args?.recursive, 'recursive') ?? false;
+    const olderThanMinutes = this.optionalNonNegativeNumber(
+      args?.olderThanMinutes,
+      'olderThanMinutes'
+    );
+
+    if (!dryRun && tracePaths.length === 0 && olderThanMinutes === undefined) {
+      throw new Error(
+        'Refusing to delete a directory scan without exact tracePaths or olderThanMinutes. Preview with dryRun: true first, or pass olderThanMinutes.'
+      );
+    }
+
+    const scope = tracePaths.length > 0
+      ? 'exact trace paths'
+      : `${recursive ? 'recursive ' : ''}directory scan: ${resolve(directory ?? 'test-traces')}`;
+    const candidatePaths = tracePaths.length > 0
+      ? tracePaths.map((path) => resolve(path))
+      : await this.discoverTraceBundles(resolve(directory ?? 'test-traces'), recursive);
+
+    const entries: TraceCleanupEntry[] = [];
+    const seenPaths = new Set<string>();
+
+    for (const candidatePath of candidatePaths) {
+      if (seenPaths.has(candidatePath)) {
+        continue;
+      }
+      seenPaths.add(candidatePath);
+      entries.push(await this.cleanupTraceCandidate(candidatePath, dryRun, olderThanMinutes));
+    }
+
+    const result: TraceCleanupResult = {
+      dryRun,
+      scope,
+      matchedCount: entries.filter((entry) =>
+        entry.status === 'would_delete' || entry.status === 'deleted'
+      ).length,
+      deletedCount: entries.filter((entry) => entry.status === 'deleted').length,
+      skippedCount: entries.filter((entry) => entry.status === 'skipped').length,
+      failedCount: entries.filter((entry) => entry.status === 'failed').length,
+      reclaimableBytes: entries
+        .filter((entry) => entry.status === 'would_delete')
+        .reduce((total, entry) => total + (entry.sizeBytes ?? 0), 0),
+      reclaimedBytes: entries
+        .filter((entry) => entry.status === 'deleted')
+        .reduce((total, entry) => total + (entry.sizeBytes ?? 0), 0),
+      entries,
+    };
+
+    const output = this.formatTraceCleanupOutput(result);
+    const text = this.formatToolOutput(output, result, outputFormat);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text,
+        },
+      ],
+      ...(result.failedCount > 0 ? { isError: true } : {}),
+    };
+  }
+
   private requiredString(value: unknown, fieldName: string): string {
     if (typeof value !== 'string' || value.trim() === '') {
       throw new Error(`${fieldName} is required`);
@@ -946,6 +1050,62 @@ export class XCTraceAnalyzerServer {
       throw new Error(`${fieldName} must be a positive number`);
     }
     return value;
+  }
+
+  private optionalNonNegativeNumber(value: unknown, fieldName: string): number | undefined {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+      throw new Error(`${fieldName} must be a non-negative number`);
+    }
+    return value;
+  }
+
+  private optionalStringArray(value: unknown, fieldName: string): string[] | undefined {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+    if (!Array.isArray(value)) {
+      throw new Error(`${fieldName} must be an array of strings`);
+    }
+    const strings = value.map((item, index) => {
+      if (typeof item !== 'string' || item.trim() === '') {
+        throw new Error(`${fieldName}[${index}] must be a non-empty string`);
+      }
+      return item.trim();
+    });
+    return strings.length > 0 ? strings : undefined;
+  }
+
+  private optionalTimeRangeMs(value: unknown): TimeRangeMs | undefined {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('timeRangeMs must be an object with startMs and endMs numbers');
+    }
+
+    const range = value as { startMs?: unknown; endMs?: unknown };
+    if (
+      typeof range.startMs !== 'number' ||
+      typeof range.endMs !== 'number' ||
+      !Number.isFinite(range.startMs) ||
+      !Number.isFinite(range.endMs)
+    ) {
+      throw new Error('timeRangeMs.startMs and timeRangeMs.endMs must be finite numbers');
+    }
+    if (range.startMs < 0) {
+      throw new Error('timeRangeMs.startMs must be greater than or equal to 0');
+    }
+    if (range.endMs <= range.startMs) {
+      throw new Error('timeRangeMs.endMs must be greater than timeRangeMs.startMs');
+    }
+
+    return {
+      startMs: range.startMs,
+      endMs: range.endMs,
+    };
   }
 
   private outputFormat(args: any): OutputFormat {
@@ -1048,7 +1208,7 @@ export class XCTraceAnalyzerServer {
     const workflowWarnings = /^\d+$/.test(processName)
       ? []
       : [
-          `Attach target "${processName}" is a process name, not a PID. If multiple processes share this name, xctrace may fail as ambiguous; use profile_advisor first or rerun with the exact PID in processName.`,
+          `Attach target "${processName}" is a process name, not a PID. If multiple processes share this name, xctrace may fail as ambiguous; rerun with the exact PID in processName.`,
         ];
     return {
       fileLabel: processName,
@@ -1056,16 +1216,6 @@ export class XCTraceAnalyzerServer {
       workflowWarnings,
       recordOptions: { processName },
     };
-  }
-
-  private optionalStringArray(value: unknown, fieldName: string): string[] | undefined {
-    if (value === undefined || value === null) {
-      return undefined;
-    }
-    if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
-      throw new Error(`${fieldName} must be an array of strings`);
-    }
-    return value;
   }
 
   private optionalStringMap(value: unknown, fieldName: string): Record<string, string> | undefined {
@@ -1082,6 +1232,35 @@ export class XCTraceAnalyzerServer {
       throw new Error(`${fieldName} must be an object with string values`);
     }
     return value as Record<string, string>;
+  }
+
+  private optionalBoolean(value: unknown, fieldName: string): boolean | undefined {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+    if (typeof value !== 'boolean') {
+      throw new Error(`${fieldName} must be a boolean`);
+    }
+    return value;
+  }
+
+  private async openTraceInInstruments(
+    tracePath: string,
+    shouldOpen: boolean
+  ): Promise<InstrumentsOpenResult | undefined> {
+    if (!shouldOpen || !this.deps.openTrace) {
+      return undefined;
+    }
+
+    try {
+      await this.deps.openTrace(tracePath);
+      return { status: 'opened' };
+    } catch (error) {
+      return {
+        status: 'failed',
+        error: (error as Error).message,
+      };
+    }
   }
 
   private async fallbackCapabilities(): Promise<XCTraceCapabilities> {
@@ -1152,279 +1331,127 @@ export class XCTraceAnalyzerServer {
     return values.some((value) => value.toLowerCase() === lower);
   }
 
-  private advisorTarget(args: any): {
-    mode: 'attach' | 'launch' | 'all-processes' | 'unknown';
-    label: string;
-    args: Record<string, unknown>;
-  } {
-    const processName = this.optionalString(args?.processName, 'processName');
-    const launchCommand = this.optionalString(args?.launchCommand, 'launchCommand');
-    if (args?.allProcesses === true) {
-      return { mode: 'all-processes', label: 'all processes', args: { target: 'all-processes' } };
+  private async discoverTraceBundles(directory: string, recursive: boolean): Promise<string[]> {
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return [];
+      }
+      throw error;
     }
-    if (launchCommand) {
+
+    const tracePaths: string[] = [];
+    for (const entry of entries) {
+      const fullPath = join(directory, entry.name);
+      if (entry.name.endsWith('.trace')) {
+        tracePaths.push(fullPath);
+        continue;
+      }
+      if (recursive && entry.isDirectory()) {
+        tracePaths.push(...(await this.discoverTraceBundles(fullPath, recursive)));
+      }
+    }
+
+    return tracePaths;
+  }
+
+  private async cleanupTraceCandidate(
+    tracePath: string,
+    dryRun: boolean,
+    olderThanMinutes?: number
+  ): Promise<TraceCleanupEntry> {
+    if (!tracePath.endsWith('.trace')) {
       return {
-        mode: 'launch',
-        label: launchCommand,
-        args: { target: 'launch', launchCommand },
+        path: tracePath,
+        status: 'skipped',
+        reason: 'not a .trace bundle',
       };
     }
-    if (processName) {
+
+    let stats;
+    try {
+      stats = await lstat(tracePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return {
+          path: tracePath,
+          status: 'skipped',
+          reason: 'path does not exist',
+        };
+      }
       return {
-        mode: 'attach',
-        label: processName,
-        args: { processName },
+        path: tracePath,
+        status: 'failed',
+        reason: (error as Error).message,
       };
     }
-    return {
-      mode: 'unknown',
-      label: 'target not specified',
-      args: {},
+
+    if (stats.isSymbolicLink()) {
+      return {
+        path: tracePath,
+        status: 'skipped',
+        reason: 'symbolic links are not deleted',
+      };
+    }
+
+    const ageMinutes = Math.max(0, (Date.now() - stats.mtimeMs) / 60_000);
+    if (olderThanMinutes !== undefined && ageMinutes < olderThanMinutes) {
+      return {
+        path: tracePath,
+        status: 'skipped',
+        modifiedAt: stats.mtime.toISOString(),
+        ageMinutes,
+        reason: `newer than ${olderThanMinutes} minutes`,
+      };
+    }
+
+    const sizeBytes = await this.tracePathSizeBytes(tracePath);
+    const baseEntry = {
+      path: tracePath,
+      sizeBytes,
+      modifiedAt: stats.mtime.toISOString(),
+      ageMinutes,
     };
+
+    if (dryRun) {
+      return {
+        ...baseEntry,
+        status: 'would_delete',
+      };
+    }
+
+    try {
+      await rm(tracePath, { recursive: true });
+      return {
+        ...baseEntry,
+        status: 'deleted',
+      };
+    } catch (error) {
+      return {
+        ...baseEntry,
+        status: 'failed',
+        reason: (error as Error).message,
+      };
+    }
   }
 
-  private inferProfilingIntent(request: string, args: any): string {
-    const text = [
-      request,
-      args?.tracePath ? 'trace' : '',
-      args?.baselinePath && args?.currentPath ? 'compare regression' : '',
-    ].join(' ').toLowerCase();
-
-    if (args?.baselinePath && args?.currentPath || /compar|regress|baseline/.test(text)) {
-      return 'compare';
+  private async tracePathSizeBytes(tracePath: string): Promise<number> {
+    const stats = await lstat(tracePath);
+    if (stats.isSymbolicLink()) {
+      return 0;
     }
-    if (args?.tracePath || /analy[sz]e|existing trace|trace file/.test(text)) {
-      return 'analyze';
-    }
-    if (/leak/.test(text)) {
-      return 'leaks';
-    }
-    if (/alloc|memory|retain|heap/.test(text)) {
-      return 'memory';
-    }
-    if (/network|http|request|url/.test(text)) {
-      return 'network';
-    }
-    if (/energy|battery|power/.test(text)) {
-      return 'energy';
-    }
-    if (/cpu|time profiler|slow|hang|freeze|stutter|performance/.test(text)) {
-      return 'cpu';
-    }
-    return 'full';
-  }
-
-  private advisorRecommendations(input: {
-    args: any;
-    request: string;
-    intent: string;
-    duration: number;
-    platform: string;
-    target: { mode: string; label: string; args: Record<string, unknown> };
-  }): Array<{
-    label: string;
-    when: string;
-    tool: string;
-    arguments: Record<string, unknown>;
-  }> {
-    const targetArgs = input.target.args;
-    const defaultTargetHint = input.target.mode === 'unknown'
-      ? { processName: '<running process name>' }
-      : targetArgs;
-    const profileTargetArgs = input.target.mode === 'unknown'
-      ? defaultTargetHint
-      : targetArgs;
-    const fullPreset = input.platform === 'ios' ? 'full-ios' : 'full';
-
-    const options = [
-      {
-        label: 'Full performance report',
-        when: 'Best first pass when the problem is broad or unclear.',
-        tool: 'profile_running_app',
-        arguments: {
-          ...profileTargetArgs,
-          preset: fullPreset,
-          durationSeconds: input.duration,
-          outputFormat: 'both',
-        },
-      },
-      {
-        label: 'CPU and hangs',
-        when: 'Use for slow UI, hangs, freezes, hot functions, or general CPU cost.',
-        tool: 'profile_running_app',
-        arguments: {
-          ...profileTargetArgs,
-          preset: 'cpu',
-          durationSeconds: input.duration,
-          outputFormat: 'both',
-        },
-      },
-      {
-        label: 'Leaks and allocation churn',
-        when: 'Use for memory growth, suspected leaks, retain cycles, or high allocation volume.',
-        tool: 'profile_running_app',
-        arguments: {
-          ...profileTargetArgs,
-          preset: 'memory',
-          durationSeconds: input.duration,
-          outputFormat: 'both',
-        },
-      },
-      {
-        label: 'Network requests',
-        when: 'Use for failed requests, transfer volume, HTTP timing, or top hosts.',
-        tool: 'profile_running_app',
-        arguments: {
-          ...profileTargetArgs,
-          preset: 'network',
-          durationSeconds: input.duration,
-          outputFormat: 'both',
-        },
-      },
-      {
-        label: 'Analyze existing trace',
-        when: 'Use when a .trace file already exists.',
-        tool: 'analyze_trace',
-        arguments: {
-          tracePath: input.args?.tracePath ?? '<path/to/app.trace>',
-          outputFormat: 'both',
-        },
-      },
-      {
-        label: 'Compare baseline vs current',
-        when: 'Use for CI or before/after regression checks.',
-        tool: 'compare_traces',
-        arguments: {
-          baselinePath: input.args?.baselinePath ?? '<path/to/baseline.trace>',
-          currentPath: input.args?.currentPath ?? '<path/to/current.trace>',
-          failOnRegression: false,
-          outputFormat: 'both',
-        },
-      },
-    ];
-
-    const priorityByIntent: Record<string, string[]> = {
-      compare: ['Compare baseline vs current'],
-      analyze: ['Analyze existing trace'],
-      leaks: ['Leaks and allocation churn', 'Full performance report'],
-      memory: ['Leaks and allocation churn', 'Full performance report'],
-      network: ['Network requests', 'Full performance report'],
-      energy: ['Full performance report'],
-      cpu: ['CPU and hangs', 'Full performance report'],
-      full: ['Full performance report'],
-    };
-    const priority = priorityByIntent[input.intent] ?? priorityByIntent.full;
-
-    return [...options].sort((a, b) => {
-      const aIndex = priority.indexOf(a.label);
-      const bIndex = priority.indexOf(b.label);
-      const aRank = aIndex === -1 ? Number.MAX_SAFE_INTEGER : aIndex;
-      const bRank = bIndex === -1 ? Number.MAX_SAFE_INTEGER : bIndex;
-      return aRank - bRank;
-    });
-  }
-
-  private advisorWorkflowNotes(target: {
-    mode: 'attach' | 'launch' | 'all-processes' | 'unknown' | string;
-    label: string;
-  }): string[] {
-    const notes = [
-      'Default recording duration is 60s. Use 20-30s only for explicit startup/cold-launch checks; otherwise record long enough to reproduce the hang.',
-      'Use outputFormat: "both" while validating a profiling workflow so the report includes Markdown plus structured supportStatus/exportAttempts.',
-      'For already-running macOS apps, attach by PID is the most reliable path when multiple app instances are running.',
-      'A clean idle attach trace does not rule out startup or interaction hangs; reproduce the problematic workflow during the recording window.',
-      'If Time Profiler, Hangs, or another family reports not_exportable, inspect Export Diagnostics before drawing performance conclusions.',
-    ];
-
-    if (target.mode === 'launch') {
-      notes.push(
-        'Do not select launch mode just because a built .app path exists; use it only when startup behavior is the explicit target.',
-      );
-      notes.push(
-        'Launch-mode traces can be saved but still fail xctrace export --toc with Document Missing Template Error; treat that as an exportability failure and retry with attach-by-PID.'
-      );
-      notes.push(
-        'If startup hangs remain suspected after launch export failure, inspect macOS Performance Diagnostics logs around the launch window for hang-risk warnings.'
-      );
-    } else if (target.mode === 'attach' && !/^\d+$/.test(target.label)) {
-      notes.push(
-        'If xctrace reports the process name is ambiguous, rerun with the exact PID as processName.'
-      );
-    } else if (target.mode === 'unknown') {
-      notes.push(
-        'If the app is already running, find its PID and pass it as processName; use launchCommand only when startup behavior is the target.'
-      );
+    if (!stats.isDirectory()) {
+      return stats.size;
     }
 
-    return notes;
-  }
-
-  private formatProfileAdvisorOutput(advice: {
-    request: string;
-    inferredIntent: string;
-    target: { mode: string; label: string };
-    capabilities: XCTraceCapabilities;
-    recommended: {
-      label: string;
-      when: string;
-      tool: string;
-      arguments: Record<string, unknown>;
-    };
-    options: Array<{
-      label: string;
-      when: string;
-      tool: string;
-      arguments: Record<string, unknown>;
-    }>;
-    workflowNotes: string[];
-  }): string {
-    const lines: string[] = [];
-
-    lines.push('# Profiling Advisor');
-    lines.push('');
-    lines.push(`- Request: ${advice.request}`);
-    lines.push(`- Inferred intent: ${advice.inferredIntent}`);
-    lines.push(`- Target: ${advice.target.label}`);
-    lines.push(`- xctrace: ${advice.capabilities.available ? advice.capabilities.version ?? 'available' : 'not available'}`);
-    lines.push('');
-
-    lines.push('## Recommended Next Step');
-    lines.push(`Use \`${advice.recommended.tool}\`: ${advice.recommended.label}.`);
-    lines.push(advice.recommended.when);
-    lines.push('');
-    lines.push('```json');
-    lines.push(JSON.stringify({
-      tool: advice.recommended.tool,
-      arguments: advice.recommended.arguments,
-    }, null, 2));
-    lines.push('```');
-    lines.push('');
-
-    lines.push('## Other Useful Options');
-    for (const option of advice.options.slice(1, 6)) {
-      lines.push(`- ${option.label}: \`${option.tool}\` - ${option.when}`);
+    let total = stats.size;
+    const entries = await readdir(tracePath, { withFileTypes: true });
+    for (const entry of entries) {
+      total += await this.tracePathSizeBytes(join(tracePath, entry.name));
     }
-
-    if (advice.workflowNotes.length > 0) {
-      lines.push('');
-      lines.push('## Workflow Notes');
-      lines.push(...advice.workflowNotes.map((note) => `- ${note}`));
-    }
-
-    const warnings = advice.capabilities.warnings;
-    if (warnings.length > 0) {
-      lines.push('');
-      lines.push('## Capability Warnings');
-      lines.push(...warnings.map((warning) => `- ${warning}`));
-    }
-
-    if (advice.target.mode === 'unknown') {
-      lines.push('');
-      lines.push('## Missing Target');
-      lines.push('- Provide `processName` for an already-running app, `launchCommand` for a launched app, or `allProcesses: true` for system-wide recording.');
-    }
-
-    return lines.join('\n');
+    return total;
   }
 
   private traceOutputPath(args: any, processName: string, template: string): string {
@@ -1480,6 +1507,7 @@ export class XCTraceAnalyzerServer {
     duration: number;
     device?: string;
     outputPath: string;
+    instrumentsOpen?: InstrumentsOpenResult;
     workflowWarnings: string[];
   }): string[] {
     const lines = [
@@ -1495,6 +1523,11 @@ export class XCTraceAnalyzerServer {
     }
 
     lines.push(`- Trace: ${recording.outputPath}`);
+    const instrumentsLine = this.formatInstrumentsOpenLine(recording.instrumentsOpen);
+    if (instrumentsLine) {
+      lines.push(instrumentsLine);
+    }
+    lines.push('- Cleanup: trace retained; use cleanup_traces when it is no longer needed');
     lines.push('');
     if (recording.workflowWarnings.length > 0) {
       lines.push('## Workflow Warnings');
@@ -1502,6 +1535,16 @@ export class XCTraceAnalyzerServer {
       lines.push('');
     }
     return lines;
+  }
+
+  private formatInstrumentsOpenLine(result?: InstrumentsOpenResult): string | undefined {
+    if (!result) {
+      return undefined;
+    }
+    if (result.status === 'opened') {
+      return '- Instruments.app: opened';
+    }
+    return `- Instruments.app: failed to open - ${result.error ?? 'unknown error'}`;
   }
 
   private formatProfileReport(profile: {
@@ -1568,7 +1611,16 @@ export class XCTraceAnalyzerServer {
 
     lines.push('## Trace Files');
     for (const result of profile.results) {
-      lines.push(`- ${result.template}: ${result.tracePath}`);
+      const openSuffix = result.instrumentsOpen?.status === 'opened'
+        ? ' (opened in Instruments.app)'
+        : '';
+      lines.push(`- ${result.template}: ${result.tracePath}${openSuffix}`);
+    }
+    if (profile.results.some((result) => !result.error)) {
+      lines.push('');
+      lines.push(
+        '_Trace files are retained for Instruments.app inspection. Use cleanup_traces when they are no longer needed._'
+      );
     }
     lines.push('');
 
@@ -1576,6 +1628,10 @@ export class XCTraceAnalyzerServer {
       lines.push(`## ${this.profileSectionTitle(result.template)}`);
       lines.push(`- Template: ${result.template}`);
       lines.push(`- Trace: ${result.tracePath}`);
+      const instrumentsLine = this.formatInstrumentsOpenLine(result.instrumentsOpen);
+      if (instrumentsLine) {
+        lines.push(instrumentsLine);
+      }
       if (profile.instruments.length > 0) {
         lines.push(`- Instruments: ${profile.instruments.join(', ')}`);
       }
@@ -1595,7 +1651,12 @@ export class XCTraceAnalyzerServer {
       lines.push('');
       lines.push(result.analysis.summary);
       lines.push('');
+      this.appendAnalysisWindow(lines, result.analysis);
+      this.appendTimeProfilerStatus(lines, result.analysis);
+      this.appendSupportStatus(lines, result.analysis);
+      this.appendExportDiagnostics(lines, result.analysis);
       this.appendCpuHighlights(lines, result.analysis);
+      this.appendUserFrameSection(lines, result.analysis);
       lines.push('');
       this.appendHangsSection(lines, result.analysis);
       this.appendInstrumentSections(lines, result.analysis);
@@ -1625,11 +1686,17 @@ export class XCTraceAnalyzerServer {
     const hasCriticalBottleneck = results.some((result) =>
       result.analysis?.bottlenecks.some((bottleneck) => bottleneck.impact === 'critical')
     );
+    const hasSevereHang = results.some((result) =>
+      (result.analysis?.hangs?.severeCount ?? 0) > 0
+    );
+    const hasHang = results.some((result) =>
+      (result.analysis?.hangs?.events.length ?? 0) > 0
+    );
 
-    if (severities.includes('critical') || hasCriticalBottleneck) {
+    if (severities.includes('critical') || hasCriticalBottleneck || hasSevereHang) {
       return 'critical issues found';
     }
-    if (severities.includes('high') || severities.includes('medium')) {
+    if (severities.includes('high') || severities.includes('medium') || hasHang) {
       return 'warnings found';
     }
     if (results.some((result) => result.error)) {
@@ -1653,6 +1720,64 @@ export class XCTraceAnalyzerServer {
       default:
         return template;
     }
+  }
+
+  private formatTraceCleanupOutput(result: TraceCleanupResult): string {
+    const lines = [
+      '# Trace Cleanup Report',
+      '',
+      `- Mode: ${result.dryRun ? 'preview' : 'delete'}`,
+      `- Scope: ${result.scope}`,
+      `- Traces matched: ${result.matchedCount}`,
+      `- Deleted: ${result.deletedCount}`,
+      `- Skipped: ${result.skippedCount}`,
+      `- Failed: ${result.failedCount}`,
+      result.dryRun
+        ? `- Reclaimable space: ${this.formatBytes(result.reclaimableBytes)}`
+        : `- Reclaimed space: ${this.formatBytes(result.reclaimedBytes)}`,
+      '',
+      '## Traces',
+    ];
+
+    if (result.entries.length === 0) {
+      lines.push('- No .trace bundles matched.');
+    } else {
+      for (const entry of result.entries) {
+        lines.push(this.formatTraceCleanupEntry(entry));
+      }
+    }
+
+    lines.push('');
+    if (result.dryRun) {
+      lines.push(
+        'No files were deleted. Re-run with dryRun: false after the user confirms the traces are no longer needed.'
+      );
+    } else if (result.deletedCount > 0) {
+      lines.push('Deleted trace bundles cannot be opened in Instruments.app unless they are restored from backup.');
+    }
+
+    return lines.join('\n');
+  }
+
+  private formatTraceCleanupEntry(entry: TraceCleanupEntry): string {
+    const details = [
+      entry.sizeBytes !== undefined ? this.formatBytes(entry.sizeBytes) : undefined,
+      entry.ageMinutes !== undefined ? `${entry.ageMinutes.toFixed(1)} min old` : undefined,
+      entry.reason,
+    ].filter(Boolean);
+    const suffix = details.length > 0 ? ` (${details.join(', ')})` : '';
+    return `- ${entry.status}: ${entry.path}${suffix}`;
+  }
+
+  private formatBytes(bytes: number): string {
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let value = bytes;
+    let unitIndex = 0;
+    while (value >= 1024 && unitIndex < units.length - 1) {
+      value /= 1024;
+      unitIndex += 1;
+    }
+    return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
   }
 
   private instrumentSectionTitle(kind: string): string {
@@ -1682,6 +1807,43 @@ export class XCTraceAnalyzerServer {
       }
       lines.push('');
     }
+  }
+
+  private appendTimeProfilerStatus(lines: string[], analysis: Analysis): void {
+    if (!analysis.stats.timeProfileError) {
+      return;
+    }
+    lines.push(
+      `**Time Profiler:** failed to parse - ${analysis.stats.timeProfileError}. The trace itself was recorded; this is an analyzer error.`
+    );
+    lines.push('');
+  }
+
+  private appendUserFrameSection(lines: string[], analysis: Analysis): void {
+    const frames = analysis.userFrameProfiles ?? [];
+    if (frames.length === 0) {
+      return;
+    }
+
+    lines.push('## Top User-Code Frames');
+    for (const frame of frames.slice(0, 10)) {
+      const module = frame.module ? `${frame.module}\`` : '';
+      lines.push(
+        `- ${module}${frame.name}: ${frame.selfTime.toFixed(0)}ms (${frame.percentage.toFixed(1)}%, ${frame.sampleCount} sample${frame.sampleCount === 1 ? '' : 's'})`
+      );
+    }
+    lines.push('');
+  }
+
+  private appendAnalysisWindow(lines: string[], analysis: Analysis): void {
+    const range = analysis.stats.timeRangeMs;
+    if (!range) {
+      return;
+    }
+    lines.push(
+      `**Analysis window:** ${formatHangStartTime(range.startMs)}-${formatHangStartTime(range.endMs)} (${formatHangDuration(range.endMs - range.startMs)})`
+    );
+    lines.push('');
   }
 
   private appendHangsSection(lines: string[], analysis: Analysis): void {
@@ -1861,6 +2023,15 @@ export class XCTraceAnalyzerServer {
         );
       }
 
+      const hangs = result.analysis?.hangs;
+      if (hangs && hangs.events.length > 0) {
+        recommendations.add(
+          `${hangs.severeCount > 0 ? 'critical' : 'medium'} Main-thread hangs: ` +
+          `${hangs.events.length} hang${hangs.events.length > 1 ? 's' : ''} detected ` +
+          `(${hangs.severeCount} severe); inspect the Hangs section and scoped Top User-Code Frames for main-thread blocking work.`
+        );
+      }
+
       if (result.error) {
         recommendations.add(`Recording failed for ${result.template}: ${result.error}`);
       }
@@ -1880,6 +2051,12 @@ export class XCTraceAnalyzerServer {
     lines.push(`**File:** ${analysis.metadata.fileName}`);
     lines.push(`**Duration:** ${(analysis.stats.totalTime / 1000).toFixed(2)}s`);
     lines.push(`**Template:** ${analysis.metadata.template}`);
+    if (analysis.stats.timeRangeMs) {
+      const range = analysis.stats.timeRangeMs;
+      lines.push(
+        `**Analysis window:** ${formatHangStartTime(range.startMs)}-${formatHangStartTime(range.endMs)} (${formatHangDuration(range.endMs - range.startMs)})`
+      );
+    }
     lines.push('');
 
     // Summary
@@ -1893,11 +2070,17 @@ export class XCTraceAnalyzerServer {
 
     // Statistics
     lines.push('## Performance Statistics');
-    lines.push(`- Total execution time: ${(analysis.stats.totalTime / 1000).toFixed(2)}s`);
-    lines.push(`- Slow functions: ${analysis.stats.slowFunctions}`);
-    lines.push(`- Average function time: ${analysis.stats.avgFunctionTime.toFixed(2)}ms`);
-    lines.push(`- Max function time: ${analysis.stats.maxFunctionTime.toFixed(2)}ms`);
-    lines.push(`- Threads used: ${analysis.stats.threadCount}`);
+    if (analysis.stats.timeProfileError) {
+      lines.push(
+        `- Time Profiler: failed to parse - ${analysis.stats.timeProfileError}. The trace itself was recorded; this is an analyzer error.`
+      );
+    } else {
+      lines.push(`- Total execution time: ${(analysis.stats.totalTime / 1000).toFixed(2)}s`);
+      lines.push(`- Slow functions: ${analysis.stats.slowFunctions}`);
+      lines.push(`- Average function time: ${analysis.stats.avgFunctionTime.toFixed(2)}ms`);
+      lines.push(`- Max function time: ${analysis.stats.maxFunctionTime.toFixed(2)}ms`);
+      lines.push(`- Threads used: ${analysis.stats.threadCount}`);
+    }
     lines.push('');
 
     // Bottlenecks
@@ -1916,6 +2099,8 @@ export class XCTraceAnalyzerServer {
         lines.push('');
       }
     }
+
+    this.appendUserFrameSection(lines, analysis);
 
     this.appendHangsSection(lines, analysis);
 

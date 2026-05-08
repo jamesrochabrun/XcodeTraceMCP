@@ -1,0 +1,4 @@
+interface:
+  display_name: "Xcode Trace Profiler"
+  short_description: "Profile Xcode apps with xctrace."
+  default_prompt: "Profile this app and tell me what is slow."

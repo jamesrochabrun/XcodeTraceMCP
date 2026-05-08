@@ -154,4 +154,283 @@ describe('TraceParser', () => {
       })
     );
   });
+
+  it('marks an instrument family partial when some matching schemas export and others fail', async () => {
+    const parser = new TraceParser({
+      exportTOC: async () => `
+        <trace-toc>
+          <run number="1">
+            <duration>2s</duration>
+            <data>
+              <table schema="memory-statistics"/>
+              <table schema="memory-vm-regions"/>
+            </data>
+          </run>
+        </trace-toc>
+      `,
+      exportTable: async (_tracePath, schema) => {
+        if (schema === 'memory-statistics') {
+          return `
+            <table>
+              <row>
+                <column name="Peak Memory" value="734003200"/>
+              </row>
+            </table>
+          `;
+        }
+        throw new Error('memory-vm-regions export failed');
+      },
+    });
+
+    const trace = await parser.parseTrace('packages/core/package.json');
+    const memoryStatus = trace.supportStatus?.find((status) => status.kind === 'memory');
+    const memoryAnalysis = trace.instrumentAnalyses?.find((analysis) => analysis.kind === 'memory');
+
+    expect(memoryStatus).toEqual(
+      expect.objectContaining({
+        status: 'partial',
+        reason: expect.stringContaining('some schemas failed'),
+      })
+    );
+    expect(memoryAnalysis?.supportStatus).toBe('partial');
+    expect(memoryAnalysis?.metrics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'Peak Memory', numericValue: 734003200 }),
+      ])
+    );
+    expect(memoryAnalysis?.findings).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ title: 'No exportable Memory rows' }),
+      ])
+    );
+    expect(trace.exportAttempts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'memory', status: 'success', schema: 'memory-statistics' }),
+        expect.objectContaining({ kind: 'memory', status: 'failed', schema: 'memory-vm-regions' }),
+      ])
+    );
+  });
+
+  it('marks exposed schemas not_exportable when no matching exports succeed', async () => {
+    const parser = new TraceParser({
+      exportTOC: async () => `
+        <trace-toc>
+          <run number="1">
+            <duration>2s</duration>
+            <data>
+              <table schema="leaks-summary"/>
+            </data>
+          </run>
+        </trace-toc>
+      `,
+      exportTable: async (_tracePath, schema) => {
+        if (schema === 'leaks-summary') {
+          throw new Error('leaks export failed');
+        }
+        return '';
+      },
+    });
+
+    const trace = await parser.parseTrace('packages/core/package.json');
+    const leaksStatus = trace.supportStatus?.find((status) => status.kind === 'leaks');
+    const networkStatus = trace.supportStatus?.find((status) => status.kind === 'network');
+
+    expect(leaksStatus).toEqual(
+      expect.objectContaining({
+        status: 'not_exportable',
+        reason: expect.stringContaining('leaks export failed'),
+      })
+    );
+    expect(networkStatus).toEqual(
+      expect.objectContaining({
+        status: 'unsupported',
+      })
+    );
+  });
+
+  it('marks GUI-only instrument tracks not_exportable when xctrace exposes no table schema', async () => {
+    const parser = new TraceParser({
+      exportTOC: async () => `
+        <trace-toc>
+          <run number="1">
+            <duration>2s</duration>
+            <data>
+              <table schema="time-profile"/>
+            </data>
+            <instruments>
+              <instrument name="Leaks"/>
+              <instrument name="Allocations"/>
+            </instruments>
+            <tracks>
+              <track name="Leaks">
+                <detail kind="table" name="Leaks"/>
+              </track>
+              <track name="Allocations">
+                <detail kind="table" name="Allocations List"/>
+              </track>
+            </tracks>
+          </run>
+        </trace-toc>
+      `,
+      exportTable: async () => '',
+    });
+
+    const trace = await parser.parseTrace('packages/core/package.json');
+    const leaksStatus = trace.supportStatus?.find((status) => status.kind === 'leaks');
+    const allocationsStatus = trace.supportStatus?.find((status) => status.kind === 'allocations');
+
+    expect(leaksStatus).toEqual(
+      expect.objectContaining({
+        status: 'not_exportable',
+        reason: expect.stringContaining('visible in Instruments.app'),
+        sourceSchemas: [],
+        sourceTracks: ['Leaks'],
+      })
+    );
+    expect(allocationsStatus).toEqual(
+      expect.objectContaining({
+        status: 'not_exportable',
+        reason: expect.stringContaining('xcrun did not expose an exportable allocations table schema'),
+        sourceSchemas: [],
+        sourceTracks: ['Allocations', 'Allocations List'],
+      })
+    );
+  });
+
+  it('marks Time Profiler not_exportable when parsing fails', async () => {
+    const parser = new TraceParser({
+      exportTOC: async () => `
+        <trace-toc>
+          <run number="1">
+            <duration>2s</duration>
+            <data>
+              <table schema="time-profile"/>
+            </data>
+          </run>
+        </trace-toc>
+      `,
+      exportTable: async () => {
+        throw new Error('invalid time-profile XML');
+      },
+    });
+
+    const trace = await parser.parseTrace('packages/core/package.json');
+
+    expect(trace.timeProfile).toBeUndefined();
+    expect(trace.supportStatus?.find((status) => status.kind === 'time-profile')).toEqual(
+      expect.objectContaining({
+        status: 'not_exportable',
+        reason: expect.stringContaining('invalid time-profile XML'),
+      })
+    );
+  });
+
+  it('extracts user process names from attached and non-system TOC processes', async () => {
+    const parser = new TraceParser({
+      exportTOC: async () => `
+        <trace-toc>
+          <run number="1">
+            <target type="attached">
+              <process name="AgentHub" path="/Applications/AgentHub.app/Contents/MacOS/AgentHub"/>
+            </target>
+            <target type="launched">
+              <process name="HelperTool" path="/Users/me/Build/HelperTool"/>
+              <process name="libsystem_kernel.dylib" path="/usr/lib/system/libsystem_kernel.dylib"/>
+            </target>
+            <data>
+              <table schema="time-profile"/>
+            </data>
+          </run>
+        </trace-toc>
+      `,
+      exportTable: async () => '',
+    });
+
+    const trace = await parser.parseTrace('packages/core/package.json');
+
+    expect(trace.metadata.userProcessNames).toEqual(['AgentHub', 'HelperTool']);
+  });
+
+  it('scopes Time Profiler samples and hang events to a requested time range', async () => {
+    const parser = new TraceParser({
+      exportTOC: async () => `
+        <trace-toc>
+          <run number="1">
+            <duration>2s</duration>
+            <data>
+              <table schema="time-profile"/>
+              <table schema="potential-hangs"/>
+            </data>
+          </run>
+        </trace-toc>
+      `,
+      exportTable: async (_tracePath, schema) => {
+        if (schema === 'time-profile') {
+          return `
+            <table>
+              <row time="100" thread="7" weight="10">
+                <backtrace><frame name="App\`BeforeWindow"/></backtrace>
+              </row>
+              <row time="300" thread="7" weight="40">
+                <backtrace><frame name="App\`ScopedWork"/></backtrace>
+              </row>
+              <row time="900" thread="7" weight="20">
+                <backtrace><frame name="App\`AfterWindow"/></backtrace>
+              </row>
+            </table>
+          `;
+        }
+        if (schema === 'potential-hangs') {
+          return `
+            <table>
+              <row>
+                <start-time fmt="00:00.150">150000000</start-time>
+                <duration fmt="200 ms">200000000</duration>
+                <hang-type>Hang</hang-type>
+                <thread fmt="Main Thread (App)">
+                  <tid>7</tid>
+                  <process fmt="App (123)"><pid>123</pid></process>
+                </thread>
+                <process fmt="App (123)"><pid>123</pid></process>
+              </row>
+              <row>
+                <start-time fmt="00:00.900">900000000</start-time>
+                <duration fmt="100 ms">100000000</duration>
+                <hang-type>Microhang</hang-type>
+                <thread fmt="Main Thread (App)">
+                  <tid>7</tid>
+                  <process fmt="App (123)"><pid>123</pid></process>
+                </thread>
+                <process fmt="App (123)"><pid>123</pid></process>
+              </row>
+            </table>
+          `;
+        }
+        return '';
+      },
+    });
+
+    const trace = await parser.parseTrace('packages/core/package.json', {
+      timeRangeMs: { startMs: 200, endMs: 700 },
+    });
+
+    expect(trace.timeProfile?.samples.map((sample) => sample.timestamp)).toEqual([300]);
+    expect(trace.timeProfile?.totalDuration).toBe(500);
+    expect(trace.timeProfile?.functionProfiles).toEqual([
+      expect.objectContaining({
+        name: 'ScopedWork',
+        module: 'App',
+        totalTime: 40,
+        selfTime: 40,
+      }),
+    ]);
+    expect(trace.hangs?.events).toHaveLength(1);
+    expect(trace.hangs?.events[0]).toEqual(
+      expect.objectContaining({
+        startMs: 150,
+        durationMs: 200,
+        hangType: 'Hang',
+      })
+    );
+  });
 });

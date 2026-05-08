@@ -2,9 +2,9 @@
 
 > Model Context Protocol server for intelligent Xcode Instruments trace analysis
 
-This MCP server provides AI assistants like Claude with the ability to automate headless `xcrun xctrace` workflows: record traces, symbolicate traces, export TOC/XML/HAR data, detect Time Profiler bottlenecks, summarize exportable Memory/Network/Energy/Allocations/Leaks data, identify Time Profiler regressions, and provide actionable recommendations.
+This MCP server provides AI assistants like Claude with the ability to automate `xcrun xctrace` workflows: record traces, symbolicate traces, export TOC/XML/HAR data, detect Time Profiler bottlenecks, summarize exportable Memory/Network/Energy/Allocations/Leaks data, identify Time Profiler regressions, clean up generated traces, and provide actionable recommendations.
 
-It is an **honest headless companion** for Instruments.app, not a complete GUI replacement. Any template or view that `xctrace` cannot export is reported as unsupported or not exportable.
+It is an **honest Instruments companion**, not a complete GUI replacement. Recording tools open the saved `.trace` in Instruments.app by default, and any template or view that `xctrace` cannot export is reported as unsupported or not exportable.
 
 ## Features
 
@@ -14,6 +14,7 @@ It is an **honest headless companion** for Instruments.app, not a complete GUI r
 - 📊 **Regression Detection** - Compare traces to find performance regressions
 - 💡 **Actionable Recommendations** - Get specific optimization suggestions with code examples
 - 🧾 **Structured Diagnostics** - Support matrix, export attempts, and JSON output for CI or agents
+- 🧹 **Trace Cleanup** - Preview or delete generated `.trace` bundles after inspection
 - 🤖 **Natural Language Interface** - Use Claude to interact with your performance data
 - ⚙️ **Local-first** - Runs through your installed Xcode Command Line Tools
 
@@ -46,37 +47,33 @@ pnpm verify
 
 ## Available Tools
 
-## Tool Selection Guide
+### Recommended User Experience
 
-- Use `profile_running_app` for "start profiling", "full report", or "record all issues" requests against an already-running app.
-- Use `profile_advisor` first when the request is vague and the user needs to choose what kind of profiling to run.
-- Use `track_running_app` for a single explicit Instruments template such as Leaks or Allocations.
-- Use `analyze_trace` when the user already has a `.trace` file.
-- Use `compare_traces` when the user asks whether a current build regressed against a baseline.
-- Use `list_templates`, `list_devices`, and `check_xctrace` for setup and troubleshooting.
-
-### `profile_advisor`
-
-Suggest the best profiling workflow before recording or analyzing anything. This is the best first tool for requests like "profile my app", "what can we inspect?", or "I don't know which Instruments template to use."
-
-**Parameters:**
-- `request` (optional): Natural-language profiling goal
-- `processName`, `launchCommand`, `tracePath`, `baselinePath`, `currentPath` (optional): Known context
-- `platform` (optional): `macos`, `ios`, or `unknown`
-- `durationSeconds` (optional): Preferred recording duration
-- `outputFormat` (optional): `markdown`, `json`, or `both`
-
-The response includes a recommended next tool call and alternatives for full, CPU, memory/leaks, network, existing trace analysis, and regression comparison.
-
-A user should be able to start from an app repo with a simple prompt:
+For human-facing use, register the bundled skill at [`../../skills/xctrace-profiler`](../../skills/xctrace-profiler/SKILL.md) in clients that support skills. Then users can stay at the prompt level:
 
 ```text
-Profile this app for hangs and CPU bottlenecks.
+Profile this app.
+Find why this app is slow.
+Profile this app for hangs.
+Profile this app for hangs and tell me which of my code is responsible.
+Check this build for leaks and allocation churn.
+Analyze network activity.
+Launch this app and profile startup hangs.
+Analyze this trace.
+Compare these two traces.
+Clean up profiling traces when we are done.
 ```
 
-For already-running macOS apps, attach by PID is usually the most reliable path, especially when multiple processes share the same name. Use launch mode when startup behavior is the target, but treat `Document Missing Template Error` from `xctrace export --toc` as a saved-but-not-exportable trace rather than a valid "no issues" result.
+The skill is the planner for this MCP server. It chooses between recording, existing trace analysis, single-template tracking, device/template checks, scoped hang follow-ups, trace comparisons, and safe cleanup once the user no longer needs the saved trace. The MCP server itself exposes execution tools only.
 
-Hang results are scoped to the captured trace window. If the report says no exported hang events were found, that does not rule out startup or interaction hangs that happened outside the recording.
+### Tool Selection Guide
+
+- Use `profile_running_app` for "start profiling", "full report", or "record all issues" requests against an already-running app.
+- Use `track_running_app` for a single explicit Instruments template such as Leaks or Allocations.
+- Use `analyze_trace` when the user already has a `.trace` file, especially for scoped follow-up analysis with `timeRangeMs` and app attribution via Top User-Code Frames.
+- Use `compare_traces` when the user asks whether a current build regressed against a baseline.
+- Use `cleanup_traces` after the user confirms recorded traces are no longer needed, or as a dry-run preview for stale trace directories.
+- Use `list_templates`, `list_devices`, and `check_xctrace` for setup and troubleshooting.
 
 ### `profile_running_app`
 
@@ -91,6 +88,7 @@ Record a running app once with a profiling preset and return one combined report
 - `device` (optional): Device or simulator name/UDID
 - `outputDirectory` (optional): Directory where generated `.trace` files should be saved (default: `test-traces`)
 - `analyze` (optional): Analyze after recording (default: true)
+- `openInInstruments` (optional): Open the saved `.trace` in Instruments.app after recording (default: true). Set false for CI or headless runs.
 - `outputFormat` (optional): `markdown`, `json`, or `both` (default: `markdown`)
 
 Preset recordings:
@@ -102,13 +100,18 @@ Preset recordings:
 - `energy`: Power Profiler. This is for iOS/iPadOS targets; Xcode reports it as unsupported for macOS recordings.
 
 Report contents:
-- Recording metadata: process, preset, duration, trace path, base template, and instruments
+- Recording metadata: process, preset, duration, trace path, base template, instruments, and Instruments.app open status
 - Support matrix and export diagnostics
 - CPU / Time Profiler: bottlenecks, top functions, threads, slow function count, and CPU recommendations
+- Hangs: main-thread hang events; severe hangs affect Overall status and Prioritized Recommendations even when Time Profiler CPU thresholds are otherwise clean
+- Top User-Code Frames: app-attributed CPU frames from Time Profiler samples
+- Time Profiler parse-failure callouts when CPU samples could not be parsed
 - Leaks: leak count, leaked bytes, top leak sites, and leak findings when Xcode exports usable data
 - Allocations: allocation counts, allocated bytes, top allocation sites, and churn findings when exportable
 - Network: request count, failed requests, transferred bytes, top hosts, and network failure findings when HAR/CFNetwork data is available
 - Prioritized Recommendations: deduplicated CPU and instrument recommendations sorted for review
+
+Reports retain trace paths and include a cleanup reminder. Use `cleanup_traces` after the user is finished inspecting the trace in Instruments.app.
 
 **Example with Claude:**
 ```
@@ -129,6 +132,7 @@ Attach to a running process with `xcrun xctrace record`, save the generated `.tr
 - `outputDirectory` (optional): Directory where the `.trace` file should be saved (default: `test-traces`)
 - `outputPath` (optional): Exact output `.trace` path. Overrides `outputDirectory`
 - `analyze` (optional): Analyze after recording (default: true)
+- `openInInstruments` (optional): Open the saved `.trace` in Instruments.app after recording (default: true). Set false for CI or headless runs.
 - `outputFormat` (optional): `markdown`, `json`, or `both` (default: `markdown`)
 
 **Example with Claude:**
@@ -137,6 +141,10 @@ Track MyApp for leaks for 60 seconds on the iPhone 16 Pro Simulator
 ```
 
 Use this tool when the user names a template. For broad profiling, prefer `profile_running_app`.
+
+If Leaks, Allocations, or another analysis family is `not_exportable`, the trace may still show a GUI track in Instruments.app while `xcrun export --toc` exposes no exportable table schema. Use the opened Instruments trace to verify that GUI-only data.
+
+The trace remains on disk after recording. Use `cleanup_traces` after the user is done inspecting it.
 
 ### `analyze_trace`
 
@@ -147,7 +155,13 @@ Analyze a single trace file for performance issues. The server auto-detects supp
 - `slowThreshold` (optional): Threshold in ms for slow functions (default: 100)
 - `topN` (optional): Number of top functions to show (default: 10)
 - `dsymPath` (optional): dSYM file or directory. The server writes a temporary symbolicated trace before analysis.
+- `timeRangeMs` (optional): `{ startMs, endMs }` trace-relative window in milliseconds. Use this for follow-up questions like "what ran during this 5 second hang?"
+- `userBinaryHints` (optional): app or module names used when trace metadata cannot identify user binaries
 - `outputFormat` (optional): `markdown`, `json`, or `both`
+
+The report distinguishes unsupported data from non-exportable data. A Time Profiler parse failure is reported as a failed CPU analysis with Export Diagnostics; do not read it as zero CPU work.
+
+Scoped analysis filters Time Profiler samples before function aggregation and filters hang events that overlap the requested window. Top User-Code Frames walks each sample backtrace from leaf to root and aggregates the deepest frame whose module matches the trace's user process names or `userBinaryHints`.
 
 **Example with Claude:**
 ```
@@ -174,6 +188,28 @@ Compare baseline.trace with current.trace and tell me if performance regressed
 ```
 
 This comparison currently focuses on Time Profiler data. Additional instrument comparison is future work.
+
+### `cleanup_traces`
+
+Preview or delete `.trace` bundles created by profiling runs.
+
+**Parameters:**
+- `tracePaths` (optional): Exact `.trace` paths to preview or delete. This is the preferred post-report cleanup path.
+- `directory` (optional): Directory to scan when `tracePaths` is omitted (default: `test-traces`)
+- `recursive` (optional): Recursively scan subdirectories in directory mode (default: false)
+- `olderThanMinutes` (optional): Only match traces older than this many minutes. Required for destructive directory cleanup.
+- `dryRun` (optional): Preview only by default. Set false after the user confirms deletion.
+- `outputFormat` (optional): `markdown`, `json`, or `both`
+
+Safety rules:
+- Only paths ending in `.trace` are deleted.
+- `dryRun` defaults to true.
+- `dryRun: false` with directory scanning requires `olderThanMinutes`, unless exact `tracePaths` are provided.
+
+**Example with Claude:**
+```
+Clean up the traces from the last profiling run.
+```
 
 ### `list_templates`
 

@@ -77,14 +77,40 @@ The skill is the planner for this MCP server. It chooses between recording, exis
 
 ### Security Defaults
 
-Attach profiling and trace analysis work by default. Higher-risk operations are opt-in:
+Attach profiling and trace analysis work by default. The secure defaults do not reduce the Instruments recorded by the `full`, `memory`, `network`, or `full-ios` presets; they restrict higher-risk MCP operations.
 
-- `XCTRACE_ANALYZER_ALLOW_LAUNCH=1`: allow launch profiling.
-- `XCTRACE_ANALYZER_ALLOW_ALL_PROCESSES=1`: allow all-process recording.
-- `XCTRACE_ANALYZER_ALLOW_EXTERNAL_OUTPUT=1`: allow writing traces outside `XCTRACE_ANALYZER_TRACE_ROOT` (`test-traces` by default).
-- `XCTRACE_ANALYZER_ALLOW_EXTERNAL_CLEANUP=1`: allow destructive cleanup outside the trace root.
-- `XCTRACE_ANALYZER_MAX_DURATION_SECONDS`: maximum recording duration, default `300`.
-- `XCTRACE_ANALYZER_REDACTION`: `balanced` by default; use `strict` or `off` for trusted local workflows.
+| Option | Default | Why it is useful and important |
+| --- | --- | --- |
+| `XCTRACE_ANALYZER_ALLOW_LAUNCH=1` | Disabled | Enables true startup/cold-launch profiling. It is disabled by default because `launchCommand` asks the MCP server to execute a local program through `xcrun xctrace --launch`. |
+| `XCTRACE_ANALYZER_ALLOW_ALL_PROCESSES=1` | Disabled | Enables system-wide traces when one process is not enough. It is disabled by default because the trace can include unrelated apps, services, paths, URLs, and symbols. |
+| `XCTRACE_ANALYZER_TRACE_ROOT=/path/to/traces` | `test-traces` | Sets the allowed trace output root. Keeping traces in one ignored folder reduces accidental repo churn and makes cleanup safer. |
+| `XCTRACE_ANALYZER_ALLOW_EXTERNAL_OUTPUT=1` | Disabled | Allows `outputPath`, `outputDirectory`, `targetStdin`, and `targetStdout` outside the trace root. It is useful for CI or shared scratch volumes, but broadens where the MCP server can write. |
+| `XCTRACE_ANALYZER_ALLOW_EXTERNAL_CLEANUP=1` | Disabled | Allows destructive cleanup outside the trace root. It is useful for maintenance of a trusted trace archive, but should be paired with a dry run or exact trace paths. |
+| `XCTRACE_ANALYZER_MAX_DURATION_SECONDS=300` | `300` | Caps recording duration to avoid accidental long-running captures and very large `.trace` bundles. Raise it only for expected long repros. |
+| `XCTRACE_ANALYZER_REDACTION=balanced` | `balanced` | Controls report redaction. `balanced` hides common secrets and user paths, `strict` also hides hostnames, and `off` preserves full details for trusted local debugging. |
+
+For startup profiling with the default security posture, manually launch the app and attach by exact PID as soon as it appears. For trusted local launch profiling, start the server with:
+
+```bash
+XCTRACE_ANALYZER_ALLOW_LAUNCH=1 pnpm --filter @xctrace-analyzer/mcp-server start
+```
+
+Claude Desktop-style MCP configs can pass the same settings through `env`:
+
+```json
+{
+  "mcpServers": {
+    "xctrace-analyzer": {
+      "command": "node",
+      "args": ["/path/to/XcodeTraceMCP/packages/mcp-server/dist/index.js"],
+      "env": {
+        "XCTRACE_ANALYZER_ALLOW_LAUNCH": "1",
+        "XCTRACE_ANALYZER_TRACE_ROOT": "/path/to/XcodeTraceMCP/test-traces"
+      }
+    }
+  }
+}
+```
 
 ### `profile_running_app`
 

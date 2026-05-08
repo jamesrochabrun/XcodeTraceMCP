@@ -180,6 +180,26 @@ MCP server exposing the core library to AI assistants.
 - `cleanup_traces` - Preview or delete generated `.trace` bundles after inspection
 - `list_templates`, `list_devices`, `check_xctrace`
 
+### Security Defaults
+
+The MCP server keeps normal attach profiling and existing trace analysis available by default. These settings do not remove Time Profiler, Leaks, Allocations, HTTP Traffic, or other Instruments from normal recordings. They only restrict operations that can execute local programs, capture unrelated app activity, write arbitrary paths, delete arbitrary traces, or print sensitive details in reports.
+
+| Option | Default | Why it matters | When to enable |
+| --- | --- | --- | --- |
+| `XCTRACE_ANALYZER_ALLOW_LAUNCH=1` | Disabled | Launch profiling can execute local programs through `xcrun xctrace --launch`; this is useful for startup profiling but equivalent to granting the MCP server permission to run the requested app or command. | Trusted local sessions where you need true cold-start or launch-time capture. |
+| `XCTRACE_ANALYZER_ALLOW_ALL_PROCESSES=1` | Disabled | All-process traces can include activity from unrelated apps and background services, not just the target under investigation. | System-wide investigations where the user explicitly accepts broader capture. |
+| `XCTRACE_ANALYZER_TRACE_ROOT=/path/to/traces` | `test-traces` | Keeps generated traces in a predictable ignored location. | Use a larger local scratch directory or project-specific trace folder. |
+| `XCTRACE_ANALYZER_ALLOW_EXTERNAL_OUTPUT=1` | Disabled | Prevents writes outside the trace root, including launch stdin/stdout redirection paths. | Trusted automation that must save traces or launch streams to a known external directory. |
+| `XCTRACE_ANALYZER_ALLOW_EXTERNAL_CLEANUP=1` | Disabled | Prevents destructive cleanup outside the trace root, except exact traces recorded by the current server instance. | Trusted maintenance scripts after a dry-run preview. |
+| `XCTRACE_ANALYZER_MAX_DURATION_SECONDS=300` | `300` | Bounds trace size and recording time so an accidental request does not capture indefinitely or produce huge exports. | Longer repros where the user expects larger traces. |
+| `XCTRACE_ANALYZER_REDACTION=balanced` | `balanced` | Redacts common secrets and local user paths in MCP output. `strict` also redacts hosts; `off` preserves full local details. | Use `strict` for shared reports; use `off` only in trusted local debugging. |
+
+For startup profiling without enabling launch mode, start the app manually and attach by exact PID as soon as it appears. For trusted local startup profiling, start the MCP server with launch enabled:
+
+```bash
+XCTRACE_ANALYZER_ALLOW_LAUNCH=1 pnpm --filter @xctrace-analyzer/mcp-server start
+```
+
 ---
 
 ## MCP Tool Reference

@@ -62,6 +62,18 @@ Recommended workflow:
 11. Recording tools open saved traces in Instruments.app by default. Use `openInInstruments: false` only for CI or headless automation.
 12. Do not delete a trace immediately after reporting while the user may still need Instruments.app verification. Once the user says the trace is no longer needed, call `cleanup_traces` with exact `tracePaths` and `dryRun: false`. For broad directory cleanup, preview first or require `olderThanMinutes`.
 
+## Security Considerations
+
+The secure defaults do not disable Time Profiler, Leaks, Allocations, HTTP Traffic, or other Instruments in normal attach recordings. They limit MCP operations that can execute local programs, capture unrelated processes, write outside the trace root, delete outside the trace root, or expose sensitive output.
+
+- `XCTRACE_ANALYZER_ALLOW_LAUNCH=1` enables launch profiling. It is useful for true startup and cold-launch captures, but it lets the MCP server execute the requested local app or command through `xcrun xctrace --launch`. Without this setting, use manual launch plus attach-by-exact-PID, or tell the user the server must be restarted with launch enabled for trusted local startup profiling.
+- `XCTRACE_ANALYZER_ALLOW_ALL_PROCESSES=1` enables all-process recording. It is useful for system-wide investigations, but traces may include unrelated apps, services, symbols, paths, URLs, and network metadata. Do not use it as a default fallback for a missing PID.
+- `XCTRACE_ANALYZER_TRACE_ROOT` sets the allowed trace output root and defaults to `test-traces`. Prefer this or another ignored local trace directory.
+- `XCTRACE_ANALYZER_ALLOW_EXTERNAL_OUTPUT=1` allows trace output and launch stream redirection outside the trace root. Use it only when the user intentionally needs an external output directory.
+- `XCTRACE_ANALYZER_ALLOW_EXTERNAL_CLEANUP=1` allows destructive cleanup outside the trace root. Prefer exact `tracePaths`; for directory cleanup, run a dry run first or require `olderThanMinutes`.
+- `XCTRACE_ANALYZER_MAX_DURATION_SECONDS` defaults to `300`. If a longer repro is needed, explain that raising it increases trace size, capture time, and the amount of recorded data.
+- `XCTRACE_ANALYZER_REDACTION` defaults to `balanced`. Use `strict` for shared reports and `off` only for trusted local debugging where full paths, hosts, and tokens are acceptable in MCP output.
+
 ### `profile_running_app`
 
 Use this for broad profiling requests like "start profiling MyApp for 60 seconds" or "give me a full performance report." It records one combined trace, then analyzes it. It supports attach, launch, and all-processes target modes; `processName` is the attach shorthand.

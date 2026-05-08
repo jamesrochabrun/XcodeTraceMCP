@@ -169,6 +169,12 @@ const NUMERIC_UNITS = new Set([
   'wakeups',
 ]);
 
+const MAX_XML_EXPORT_BYTES = 50 * 1024 * 1024;
+const MAX_HAR_EXPORT_BYTES = 25 * 1024 * 1024;
+const MAX_TABLE_ROWS = 100_000;
+const MAX_HAR_ENTRIES = 25_000;
+const MAX_XML_DEPTH = 200;
+
 /**
  * Main parser class for Xcode Instruments traces
  */
@@ -185,6 +191,7 @@ export class TraceParser {
       textNodeName: '#text',
       parseAttributeValue: true,
       trimValues: true,
+      processEntities: false,
     });
   }
 
@@ -267,7 +274,7 @@ export class TraceParser {
   }> {
     try {
       const tocXML = await this.exporter.exportTOC(tracePath);
-      const tocData = this.xmlParser.parse(tocXML);
+      const tocData = this.parseXml(tocXML, 'trace TOC');
       const schemas = this.extractSchemas(tocData);
       const tableDescriptors = this.extractTableDescriptors(tocData);
       const userProcessNames = this.extractUserProcessNames(tocData);
@@ -365,7 +372,7 @@ export class TraceParser {
         return undefined;
       }
 
-      const parsed = this.xmlParser.parse(xmlData);
+      const parsed = this.parseXml(xmlData, 'Time Profiler table');
 
       // Extract table data. Recent xctrace versions wrap XPath exports in
       // trace-query-result/node instead of returning a bare table element.
@@ -385,7 +392,7 @@ export class TraceParser {
       const rawSamples: Sample[] = [];
 
       // Parse table rows
-      const rows = this.rowsFromTableNode(table);
+      const rows = this.limitRows(this.rowsFromTableNode(table), 'Time Profiler');
 
       for (const row of rows) {
         if (!row) continue;
@@ -506,7 +513,7 @@ export class TraceParser {
           continue;
         }
 
-        const parsed = this.xmlParser.parse(xmlData);
+        const parsed = this.parseXml(xmlData, `${schema} table`);
         const table = parsed.table ?? parsed['trace-query-result']?.node;
         if (!table) {
           this.exportAttempts.push({
@@ -519,7 +526,7 @@ export class TraceParser {
           continue;
         }
 
-        const rawRows = this.rowsFromTableNode(table);
+        const rawRows = this.limitRows(this.rowsFromTableNode(table), schema);
         const resolved = this.resolveIdRefs(rawRows);
         const schemaEvents = resolved
           .map((row) => this.parseHangRow(row, schema))
@@ -660,10 +667,13 @@ export class TraceParser {
   private resolveIdRefs(rows: any[]): any[] {
     const idMap = new Map<string, any>();
 
-    const collect = (value: any): void => {
+    const collect = (value: any, depth: number = 0): void => {
       if (value === null || typeof value !== 'object') return;
+      if (depth > MAX_XML_DEPTH) {
+        throw new TraceParserError(`XML id/ref nesting exceeded the ${MAX_XML_DEPTH} level safety limit`);
+      }
       if (Array.isArray(value)) {
-        for (const item of value) collect(item);
+        for (const item of value) collect(item, depth + 1);
         return;
       }
       const id = value['@_id'];
@@ -672,20 +682,27 @@ export class TraceParser {
       }
       for (const [key, child] of Object.entries(value)) {
         if (key.startsWith('@_')) continue;
-        collect(child);
+        collect(child, depth + 1);
       }
     };
     for (const row of rows) collect(row);
 
-    const resolve = (value: any): any => {
+    const resolve = (value: any, seenRefs: Set<string> = new Set(), depth: number = 0): any => {
       if (value === null || typeof value !== 'object') return value;
-      if (Array.isArray(value)) return value.map(resolve);
+      if (depth > MAX_XML_DEPTH) {
+        throw new TraceParserError(`XML id/ref nesting exceeded the ${MAX_XML_DEPTH} level safety limit`);
+      }
+      if (Array.isArray(value)) return value.map((item) => resolve(item, seenRefs, depth + 1));
       const refId = value['@_ref'];
       if (refId !== undefined && refId !== null) {
-        const captured = idMap.get(String(refId));
+        const key = String(refId);
+        if (seenRefs.has(key)) {
+          throw new TraceParserError(`Cyclic XML id/ref relationship detected for id ${key}`);
+        }
+        const captured = idMap.get(key);
         if (captured !== undefined) {
           // Resolve the captured node recursively in case it itself contains refs.
-          return resolve(captured);
+          return resolve(captured, new Set([...seenRefs, key]), depth + 1);
         }
       }
       const out: any = {};
@@ -693,13 +710,13 @@ export class TraceParser {
         if (key.startsWith('@_')) {
           out[key] = child;
         } else {
-          out[key] = resolve(child);
+          out[key] = resolve(child, seenRefs, depth + 1);
         }
       }
       return out;
     };
 
-    return rows.map(resolve);
+    return rows.map((row) => resolve(row));
   }
 
   /**
@@ -823,8 +840,19 @@ export class TraceParser {
         this.exportAttempts.push({ kind: 'har', status: 'empty' });
         return undefined;
       }
+      this.assertInputSize(har, MAX_HAR_EXPORT_BYTES, 'HAR export');
+      const parsedHar = JSON.parse(har);
+      const entries = Array.isArray(parsedHar?.log?.entries) ? parsedHar.log.entries : [];
+      if (entries.length > MAX_HAR_ENTRIES) {
+        this.exportAttempts.push({
+          kind: 'har',
+          status: 'failed',
+          message: `HAR export contains ${entries.length} entries, exceeding the ${MAX_HAR_ENTRIES} entry safety limit.`,
+        });
+        return undefined;
+      }
       this.exportAttempts.push({ kind: 'har', status: 'success' });
-      return JSON.parse(har);
+      return parsedHar;
     } catch {
       this.exportAttempts.push({ kind: 'har', status: 'failed' });
       return undefined;
@@ -1199,9 +1227,12 @@ export class TraceParser {
   private extractSchemas(tocData: any): string[] {
     const schemas = new Set<string>();
 
-    const visit = (node: any) => {
+    const visit = (node: any, depth: number = 0) => {
       if (!node || typeof node !== 'object') {
         return;
+      }
+      if (depth > MAX_XML_DEPTH) {
+        throw new TraceParserError(`Trace TOC nesting exceeded the ${MAX_XML_DEPTH} level safety limit`);
       }
 
       if (typeof node['@_schema'] === 'string') {
@@ -1210,9 +1241,9 @@ export class TraceParser {
 
       for (const value of Object.values(node)) {
         if (Array.isArray(value)) {
-          value.forEach(visit);
+          value.forEach((item) => visit(item, depth + 1));
         } else {
-          visit(value);
+          visit(value, depth + 1);
         }
       }
     };
@@ -1238,9 +1269,12 @@ export class TraceParser {
       }
     };
 
-    const visit = (node: any, keyName?: string) => {
+    const visit = (node: any, keyName?: string, depth: number = 0) => {
       if (!node || typeof node !== 'object') {
         return;
+      }
+      if (depth > MAX_XML_DEPTH) {
+        throw new TraceParserError(`Trace TOC nesting exceeded the ${MAX_XML_DEPTH} level safety limit`);
       }
 
       if (keyName === 'instrument' || keyName === 'track' || keyName === 'detail') {
@@ -1255,7 +1289,7 @@ export class TraceParser {
           continue;
         }
         for (const child of this.arrayOf(value)) {
-          visit(child, key);
+          visit(child, key, depth + 1);
         }
       }
     };
@@ -1270,9 +1304,12 @@ export class TraceParser {
   private extractUserProcessNames(tocData: any): string[] {
     const names = new Set<string>();
 
-    const visit = (node: any, keyName?: string, attachedTarget = false) => {
+    const visit = (node: any, keyName?: string, attachedTarget = false, depth: number = 0) => {
       if (!node || typeof node !== 'object') {
         return;
+      }
+      if (depth > MAX_XML_DEPTH) {
+        throw new TraceParserError(`Trace TOC nesting exceeded the ${MAX_XML_DEPTH} level safety limit`);
       }
 
       const currentAttached = attachedTarget || this.isAttachedTargetNode(keyName, node);
@@ -1289,7 +1326,7 @@ export class TraceParser {
           continue;
         }
         for (const child of this.arrayOf(value)) {
-          visit(child, key, currentAttached);
+          visit(child, key, currentAttached, depth + 1);
         }
       }
     };
@@ -1366,10 +1403,14 @@ export class TraceParser {
       runNumber: number,
       path: string,
       trackName?: string,
-      detailName?: string
+      detailName?: string,
+      depth: number = 0
     ) => {
       if (!node || typeof node !== 'object') {
         return;
+      }
+      if (depth > MAX_XML_DEPTH) {
+        throw new TraceParserError(`Trace TOC nesting exceeded the ${MAX_XML_DEPTH} level safety limit`);
       }
 
       addDescriptor(node, runNumber, path, trackName, detailName);
@@ -1393,7 +1434,8 @@ export class TraceParser {
             runNumber,
             `${path}/${this.xpathSegment(key, child)}`,
             childTrackName,
-            childDetailName
+            childDetailName,
+            depth + 1
           );
         }
       }
@@ -1484,14 +1526,38 @@ export class TraceParser {
       return [];
     }
 
-    const parsed = this.xmlParser.parse(xmlData);
+    const parsed = this.parseXml(xmlData, 'instrument table');
     const table =
       parsed.table ?? parsed['trace-query-result']?.node ?? this.findFirstKey(parsed, 'table');
     if (!table) {
       return [];
     }
 
-    return this.rowsFromTableNode(table).map((row) => this.flattenRow(row));
+    return this.limitRows(this.rowsFromTableNode(table), 'instrument table')
+      .map((row) => this.flattenRow(row));
+  }
+
+  private parseXml(xmlData: string, label: string): any {
+    this.assertInputSize(xmlData, MAX_XML_EXPORT_BYTES, label);
+    return this.xmlParser.parse(xmlData);
+  }
+
+  private assertInputSize(value: string, maxBytes: number, label: string): void {
+    const size = Buffer.byteLength(value, 'utf8');
+    if (size > maxBytes) {
+      throw new TraceParserError(
+        `${label} exceeded the ${Math.round(maxBytes / 1024 / 1024)} MB safety limit`
+      );
+    }
+  }
+
+  private limitRows<T>(rows: T[], label: string): T[] {
+    if (rows.length > MAX_TABLE_ROWS) {
+      throw new TraceParserError(
+        `${label} exported ${rows.length} rows, exceeding the ${MAX_TABLE_ROWS} row safety limit`
+      );
+    }
+    return rows;
   }
 
   private rowsFromTableNode(table: any): any[] {
@@ -1586,14 +1652,21 @@ export class TraceParser {
   }
 
   private findFirstKey(node: any, key: string): any | undefined {
+    return this.findFirstKeyAtDepth(node, key, 0);
+  }
+
+  private findFirstKeyAtDepth(node: any, key: string, depth: number): any | undefined {
     if (!node || typeof node !== 'object') {
       return undefined;
+    }
+    if (depth > MAX_XML_DEPTH) {
+      throw new TraceParserError(`XML nesting exceeded the ${MAX_XML_DEPTH} level safety limit`);
     }
     if (node[key]) {
       return node[key];
     }
     for (const value of Object.values(node)) {
-      const found = this.findFirstKey(value, key);
+      const found = this.findFirstKeyAtDepth(value, key, depth + 1);
       if (found) {
         return found;
       }
@@ -1618,17 +1691,38 @@ export class TraceParser {
   }
 
   private xpathSegment(key: string, node: any): string {
+    const elementName = this.safeXPathElementName(key);
     const schema = node?.['@_schema'];
     if (typeof schema === 'string' && schema) {
-      return `${key}[@schema="${schema}"]`;
+      return `${elementName}[@schema=${this.xpathStringLiteral(schema)}]`;
     }
 
     const name = this.nodeName(node);
     if (name) {
-      return `${key}[@name="${name}"]`;
+      return `${elementName}[@name=${this.xpathStringLiteral(name)}]`;
     }
 
-    return key;
+    return elementName;
+  }
+
+  private safeXPathElementName(key: string): string {
+    if (/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(key)) {
+      return key;
+    }
+    throw new TraceParserError(`Unsafe XML element name in trace TOC: ${key}`);
+  }
+
+  private xpathStringLiteral(value: string): string {
+    if (!value.includes('"')) {
+      return `"${value}"`;
+    }
+    if (!value.includes("'")) {
+      return `'${value}'`;
+    }
+    const parts = value.split("'").flatMap((part, index) =>
+      index === 0 ? [`'${part}'`] : [`"'"`, `'${part}'`]
+    );
+    return `concat(${parts.join(', ')})`;
   }
 
   private parseScalar(value: any): string | number | boolean {

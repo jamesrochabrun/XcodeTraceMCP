@@ -66,6 +66,7 @@ Be the user-facing profiler for xctrace-analyzer. Users should ask in plain lang
    - Recording tools open the saved `.trace` in Instruments.app by default with `openInInstruments: true`; pass `false` only for CI or headless automation.
    - Use `durationSeconds: 60` by default; use 20-30 seconds only for explicit startup checks or longer when the repro needs it.
    - Use temp or ignored output locations such as `test-traces/`; do not commit `.trace` files.
+   - Secure defaults block launch profiling, all-process recording, external trace output, and destructive cleanup outside the trace root unless the MCP server was explicitly configured to allow them.
    - Keep recorded traces until the user has had a chance to inspect Instruments.app or asks for cleanup.
    - Use `check_xctrace`, `list_templates`, or `list_devices` only for setup, device selection, or troubleshooting.
 

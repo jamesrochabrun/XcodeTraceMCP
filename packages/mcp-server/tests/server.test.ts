@@ -115,7 +115,7 @@ describe('XCTraceAnalyzerServer', () => {
     const exitCode = await runCli(['--version'], output.io);
 
     expect(exitCode).toBe(0);
-    expect(output.stdout).toBe('xctrace-analyzer 0.1.2\n');
+    expect(output.stdout).toBe('xctrace-analyzer 0.1.3\n');
     expect(output.stderr).toBe('');
   });
 
@@ -162,7 +162,7 @@ describe('XCTraceAnalyzerServer', () => {
     });
 
     expect(exitCode).toBe(0);
-    expect(output.stdout).toContain('xctrace-analyzer: 0.1.2');
+    expect(output.stdout).toContain('xctrace-analyzer: 0.1.3');
     expect(output.stdout).toContain('xcrun xctrace: available');
     expect(output.stdout).toContain('templates: 1');
     expect(output.stdout).toContain('trace root: ');

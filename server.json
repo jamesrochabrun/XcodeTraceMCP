@@ -3,7 +3,7 @@
   "name": "io.github.jamesrochabrun/xctrace-analyzer",
   "title": "Xcode Trace Analyzer",
   "description": "Local MCP server for recording, opening, exporting, parsing, and analyzing Xcode Instruments traces through xcrun xctrace.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "repository": {
     "url": "https://github.com/jamesrochabrun/XcodeTraceMCP",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "npm",
       "identifier": "@xctrace-analyzer/mcp-server",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "transport": {
         "type": "stdio"
       }

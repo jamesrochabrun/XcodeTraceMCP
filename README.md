@@ -10,9 +10,53 @@ This project is an **Instruments companion**, not a full replacement for Instrum
 
 ## Installation
 
-> ⚠️ **Not yet published to npm.** For now, you need to build from source (see below).
+### Claude Code
 
-### 1. Clone and Build
+```bash
+claude mcp add --transport stdio --scope user xctrace-analyzer -- npx -y @xctrace-analyzer/mcp-server
+```
+
+Verify the local `xcrun xctrace` setup:
+
+```bash
+npx -y @xctrace-analyzer/mcp-server --check
+```
+
+### Claude Desktop
+
+Add this to `~/Library/Application Support/Claude/claude_desktop_config.json`, then restart Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "xctrace-analyzer": {
+      "command": "npx",
+      "args": ["-y", "@xctrace-analyzer/mcp-server"]
+    }
+  }
+}
+```
+
+### Optional Environment Settings
+
+Claude Desktop-style MCP configs can pass security settings through `env`:
+
+```json
+{
+  "mcpServers": {
+    "xctrace-analyzer": {
+      "command": "npx",
+      "args": ["-y", "@xctrace-analyzer/mcp-server"],
+      "env": {
+        "XCTRACE_ANALYZER_TRACE_ROOT": "/Users/you/Library/Application Support/xctrace-analyzer/traces",
+        "XCTRACE_ANALYZER_ALLOW_LAUNCH": "1"
+      }
+    }
+  }
+}
+```
+
+### Build From Source
 
 ```bash
 git clone https://github.com/jamesrochabrun/XcodeTraceMCP.git
@@ -21,51 +65,7 @@ pnpm install --frozen-lockfile
 pnpm verify
 ```
 
-### 2. Configure Your Claude Client
-
-**Claude Desktop**
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "xctrace-analyzer": {
-      "command": "node",
-      "args": ["/absolute/path/to/XcodeTraceMCP/packages/mcp-server/dist/index.js"]
-    }
-  }
-}
-```
-
-**Claude Code (Web)**
-Create `.claude/mcp_settings.json` in your project:
-
-```json
-{
-  "mcpServers": {
-    "xctrace-analyzer": {
-      "command": "node",
-      "args": ["packages/mcp-server/dist/index.js"]
-    }
-  }
-}
-```
-
-**Claude Code CLI**
-Add to `~/.config/claude/config.json`:
-
-```json
-{
-  "mcpServers": {
-    "xctrace-analyzer": {
-      "command": "node",
-      "args": ["/absolute/path/to/XcodeTraceMCP/packages/mcp-server/dist/index.js"]
-    }
-  }
-}
-```
-
-### 3. Restart your Claude client
+For local source installs, point your MCP client at `packages/mcp-server/dist/index.js`.
 
 ---
 
@@ -85,12 +85,13 @@ Profile this app for hangs and tell me which of my code is responsible.
 Check this build for leaks and allocation churn.
 Analyze network activity.
 Launch this app and profile startup hangs.
+I will launch MyApp; record it for 60 seconds when it appears.
 Analyze this trace.
 Compare these two traces.
 Clean up profiling traces when we are done.
 ```
 
-The skill is the user-facing planner. It chooses the target, selects the recording or analysis workflow, records or analyzes with `outputFormat: "both"` when diagnostics matter, can rerun `analyze_trace` with `timeRangeMs` around a hang so the final answer names app-owned code from `## Top User-Code Frames`, and offers `cleanup_traces` once the saved trace is no longer needed.
+The skill is the user-facing planner. It chooses the target, selects the recording or analysis workflow, records or analyzes with `outputFormat: "both"` when diagnostics matter, can wait for a manually launched app and attach to the first valid PID without a second prompt, can rerun `analyze_trace` with `timeRangeMs` around a hang so the final answer names app-owned code from `## Top User-Code Frames`, and offers `cleanup_traces` once the saved trace is no longer needed.
 
 Use the raw MCP tools directly only when building another integration, test, or scripted workflow.
 
@@ -150,7 +151,7 @@ Claude: [Lists all templates on your system]
 
 ## Supported Scope
 
-This repository is a local, repo-installable MCP server. `profile_running_app` can attach to a process, launch a target, or record all processes with one combined `xcrun xctrace record` session, save the `.trace`, open it in Instruments.app by default, and analyze it. `track_running_app` records one specific template and also opens the saved trace by default. Recorded traces are retained so users can inspect them in Instruments.app; `cleanup_traces` previews or deletes `.trace` bundles after the user confirms they are no longer needed. `analyze_trace` auto-detects Time Profiler, Memory, Network, Energy, Allocations, and Leaks data exported by `xcrun xctrace`; each area is reported as supported, partial, not exportable, or unsupported. If a GUI track such as Leaks is visible in Instruments.app but `xcrun export --toc` exposes no exportable table schema, the report marks that family as `not_exportable`, not as "no issues." Existing traces can be scoped with `timeRangeMs` to answer "what ran during this hang window?" without re-recording, and Top User-Code Frames attribute Time Profiler samples to app binaries instead of system frames. If Time Profiler export or parsing fails, the report says it failed to parse instead of presenting zero-thread CPU data as a valid result. `compare_traces` remains focused on Time Profiler regressions. Public npm publishing, a standalone CLI, and full Instruments.app GUI parity are out of scope for the current internal production target.
+This repository is a local MCP server distributed through npm/npx and usable from source. `profile_running_app` can attach to a process, launch a target, or record all processes with one combined `xcrun xctrace record` session, save the `.trace`, open it in Instruments.app by default, and analyze it. `track_running_app` records one specific template and also opens the saved trace by default. Recorded traces are retained so users can inspect them in Instruments.app; `cleanup_traces` previews or deletes `.trace` bundles after the user confirms they are no longer needed. `analyze_trace` auto-detects Time Profiler, Memory, Network, Energy, Allocations, and Leaks data exported by `xcrun xctrace`; each area is reported as supported, partial, not exportable, or unsupported. If a GUI track such as Leaks is visible in Instruments.app but `xcrun export --toc` exposes no exportable table schema, the report marks that family as `not_exportable`, not as "no issues." Existing traces can be scoped with `timeRangeMs` to answer "what ran during this hang window?" without re-recording, and Top User-Code Frames attribute Time Profiler samples to app binaries instead of system frames. If Time Profiler export or parsing fails, the report says it failed to parse instead of presenting zero-thread CPU data as a valid result. `compare_traces` remains focused on Time Profiler regressions. Full Instruments.app GUI parity remains out of scope.
 
 ---
 
@@ -188,7 +189,7 @@ The MCP server keeps normal attach profiling and existing trace analysis availab
 | --- | --- | --- | --- |
 | `XCTRACE_ANALYZER_ALLOW_LAUNCH=1` | Disabled | Launch profiling can execute local programs through `xcrun xctrace --launch`; this is useful for startup profiling but equivalent to granting the MCP server permission to run the requested app or command. | Trusted local sessions where you need true cold-start or launch-time capture. |
 | `XCTRACE_ANALYZER_ALLOW_ALL_PROCESSES=1` | Disabled | All-process traces can include activity from unrelated apps and background services, not just the target under investigation. | System-wide investigations where the user explicitly accepts broader capture. |
-| `XCTRACE_ANALYZER_TRACE_ROOT=/path/to/traces` | `test-traces` | Keeps generated traces in a predictable ignored location. | Use a larger local scratch directory or project-specific trace folder. |
+| `XCTRACE_ANALYZER_TRACE_ROOT=/path/to/traces` | `~/Library/Application Support/xctrace-analyzer/traces` | Keeps generated traces in a predictable user-level location. | Use a larger local scratch directory or project-specific trace folder. |
 | `XCTRACE_ANALYZER_ALLOW_EXTERNAL_OUTPUT=1` | Disabled | Prevents writes outside the trace root, including launch stdin/stdout redirection paths. | Trusted automation that must save traces or launch streams to a known external directory. |
 | `XCTRACE_ANALYZER_ALLOW_EXTERNAL_CLEANUP=1` | Disabled | Prevents destructive cleanup outside the trace root, except exact traces recorded by the current server instance. | Trusted maintenance scripts after a dry-run preview. |
 | `XCTRACE_ANALYZER_MAX_DURATION_SECONDS=300` | `300` | Bounds trace size and recording time so an accidental request does not capture indefinitely or produce huge exports. | Longer repros where the user expects larger traces. |
@@ -197,7 +198,7 @@ The MCP server keeps normal attach profiling and existing trace analysis availab
 For startup profiling without enabling launch mode, start the app manually and attach by exact PID as soon as it appears. For trusted local startup profiling, start the MCP server with launch enabled:
 
 ```bash
-XCTRACE_ANALYZER_ALLOW_LAUNCH=1 pnpm --filter @xctrace-analyzer/mcp-server start
+XCTRACE_ANALYZER_ALLOW_LAUNCH=1 npx -y @xctrace-analyzer/mcp-server
 ```
 
 ---
@@ -302,7 +303,7 @@ Example after a report:
 
 - **macOS** with Xcode Command Line Tools
 - **Node.js** 18+
-- **pnpm** (or npm/yarn)
+- **pnpm** only for source development
 - **Claude Desktop**, **Claude Code (Web/CLI)**, or another MCP-compatible client
 
 ---
@@ -353,6 +354,22 @@ Requests, failures, bytes transferred, and hosts.
 For iOS/iPadOS, use the `full-ios` preset to include Energy / Power data.
 ```
 
+### Record a manual launch
+```
+You: I will launch MyApp; record it for 60 seconds when it appears.
+
+Claude:
+I'm watching for MyApp now; launch it when ready.
+
+# Profiling Report
+
+- Target: MyApp PID 12345, attached immediately after launch
+- Duration: 60s
+- Preset: full
+- Trace: ~/Library/Application Support/xctrace-analyzer/traces/MyApp-full-...trace
+- Instruments.app: opened
+```
+
 ### Track a running app for leaks
 ```
 You: Track MyApp for leaks for 60 seconds on the iPhone 16 Pro Simulator
@@ -364,7 +381,7 @@ Claude:
 - Template: Leaks
 - Duration: 60s
 - Device: iPhone 16 Pro Simulator
-- Trace: /path/to/XcodeTraceMCP/test-traces/MyApp-Leaks-2026-05-02T16-30-00-000Z.trace
+- Trace: ~/Library/Application Support/xctrace-analyzer/traces/MyApp-Leaks-2026-05-02T16-30-00-000Z.trace
 
 ## Additional Instrument Analysis
 ### Leaks Analysis
@@ -427,6 +444,13 @@ To inspect the schemas exposed by local traces without committing trace files:
 pnpm inspect:trace test-traces/memory.trace test-traces/network.trace
 ```
 
+To run the packaged MCP stdio smoke test:
+
+```bash
+pnpm build
+pnpm test:mcp-smoke
+```
+
 To contribute production support:
 
 1. Fork, clone, and branch from `main`
@@ -436,7 +460,14 @@ To contribute production support:
 5. Add unit tests plus optional local integration validation
 6. Submit a PR
 
-Publishing to npm remains future work.
+Public npm packages are released from tagged builds after `pnpm verify` and the MCP stdio smoke test pass.
+
+Release checklist:
+
+1. Create and control the `@xctrace-analyzer` npm organization.
+2. Set `NPM_TOKEN` in the GitHub repository secrets, or switch the release workflow to npm trusted publishing.
+3. Push a `vX.Y.Z` tag after updating package versions and `server.json`.
+4. After npm publish succeeds, authenticate with the MCP Registry and run `mcp-publisher publish` from the repo root.
 
 ---
 

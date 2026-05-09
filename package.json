@@ -7,6 +7,14 @@
   "keywords": ["xcode", "instruments", "performance", "mcp", "ai"],
   "author": "James Rochabrun",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesrochabrun/XcodeTraceMCP.git"
+  },
+  "homepage": "https://github.com/jamesrochabrun/XcodeTraceMCP#readme",
+  "bugs": {
+    "url": "https://github.com/jamesrochabrun/XcodeTraceMCP/issues"
+  },
   "workspaces": [
     "packages/*"
   ],
@@ -15,7 +23,9 @@
     "typecheck": "pnpm --filter @xctrace-analyzer/core typecheck && pnpm --filter @xctrace-analyzer/core build && pnpm --filter @xctrace-analyzer/mcp-server typecheck",
     "test": "vitest run",
     "test:integration": "node scripts/integration-smoke.mjs",
-    "verify": "pnpm typecheck && pnpm test && pnpm build",
+    "test:mcp-smoke": "node scripts/mcp-tools-list-smoke.mjs",
+    "verify": "pnpm typecheck && pnpm test && pnpm build && pnpm check:pack",
+    "check:pack": "node scripts/check-package-publish.mjs",
     "clean": "pnpm -r clean",
     "dev:core": "pnpm --filter @xctrace-analyzer/core dev",
     "dev:mcp": "pnpm --filter @xctrace-analyzer/mcp-server dev",
@@ -32,6 +42,8 @@
   },
   "pnpm": {
     "overrides": {
+      "@eslint/eslintrc>ajv": "6.12.6",
+      "eslint>ajv": "6.12.6",
       "ajv": "8.18.0",
       "path-to-regexp": "8.4.0",
       "qs": "6.14.2"

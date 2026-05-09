@@ -9,7 +9,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { execFile as execFileCallback } from 'child_process';
-import { readFileSync } from 'fs';
+import { readFileSync, realpathSync } from 'fs';
 import { lstat, mkdir, mkdtemp, readdir, rm } from 'fs/promises';
 import { homedir, tmpdir } from 'os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
@@ -2740,10 +2740,22 @@ function redactText(value: string, mode: RedactionMode, collapseWhitespace: bool
   return output;
 }
 
+export function isCliEntrypoint(modulePath: string, argvPath: string | undefined = process.argv[1]): boolean {
+  return argvPath ? normalizeEntrypointPath(modulePath) === normalizeEntrypointPath(argvPath) : false;
+}
+
+function normalizeEntrypointPath(pathValue: string): string {
+  const resolvedPath = resolve(pathValue);
+
+  try {
+    return realpathSync(resolvedPath);
+  } catch {
+    return resolvedPath;
+  }
+}
+
 function isMainModule(): boolean {
-  return process.argv[1]
-    ? fileURLToPath(import.meta.url) === resolve(process.argv[1])
-    : false;
+  return isCliEntrypoint(fileURLToPath(import.meta.url));
 }
 
 /** Format a trace-relative offset as `mm:ss.SSS` (matches Instruments display). */

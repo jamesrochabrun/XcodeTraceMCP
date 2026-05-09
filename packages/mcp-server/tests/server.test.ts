@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { getDefaultTraceRoot, runCli, XCTraceAnalyzerServer } from '../src/index.js';
+import { getDefaultTraceRoot, isCliEntrypoint, runCli, XCTraceAnalyzerServer } from '../src/index.js';
 import { Analysis, Comparison, RecordOptions } from '@xctrace-analyzer/core';
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'fs/promises';
+import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 
 function analysis(overrides: Partial<Analysis> = {}): Analysis {
   return {
@@ -115,8 +115,26 @@ describe('XCTraceAnalyzerServer', () => {
     const exitCode = await runCli(['--version'], output.io);
 
     expect(exitCode).toBe(0);
-    expect(output.stdout).toBe('xctrace-analyzer 0.1.0\n');
+    expect(output.stdout).toBe('xctrace-analyzer 0.1.2\n');
     expect(output.stderr).toBe('');
+  });
+
+  it('recognizes npm bin symlinks as the package CLI entrypoint', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'xctrace-cli-entrypoint-'));
+
+    try {
+      const target = join(tempDir, 'dist', 'index.js');
+      const bin = join(tempDir, 'node_modules', '.bin', 'xctrace-analyzer-mcp');
+      await mkdir(dirname(target), { recursive: true });
+      await mkdir(dirname(bin), { recursive: true });
+      await writeFile(target, '#!/usr/bin/env node\n');
+      await symlink(target, bin);
+
+      expect(isCliEntrypoint(target, bin)).toBe(true);
+      expect(isCliEntrypoint(target, join(tempDir, 'other.js'))).toBe(false);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('prints a concise xctrace health check from the package CLI', async () => {
@@ -144,7 +162,7 @@ describe('XCTraceAnalyzerServer', () => {
     });
 
     expect(exitCode).toBe(0);
-    expect(output.stdout).toContain('xctrace-analyzer: 0.1.0');
+    expect(output.stdout).toContain('xctrace-analyzer: 0.1.2');
     expect(output.stdout).toContain('xcrun xctrace: available');
     expect(output.stdout).toContain('templates: 1');
     expect(output.stdout).toContain('trace root: ');

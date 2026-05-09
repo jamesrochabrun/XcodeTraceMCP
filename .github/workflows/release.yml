@@ -23,13 +23,28 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify
       - run: pnpm test:mcp-smoke
+      - name: Pack packages
+        run: |
+          mkdir -p .release
+          pnpm --dir packages/core pack --pack-destination "$PWD/.release"
+          pnpm --dir packages/mcp-server pack --pack-destination "$PWD/.release"
       - name: Publish core
-        working-directory: packages/core
-        run: pnpm publish --access public --provenance --no-git-checks
+        run: |
+          VERSION="$(node -p "require('./packages/core/package.json').version")"
+          if npm view "@xctrace-analyzer/core@$VERSION" version >/dev/null 2>&1; then
+            echo "@xctrace-analyzer/core@$VERSION is already published"
+          else
+            npm publish ".release/xctrace-analyzer-core-$VERSION.tgz" --access public --provenance
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Publish MCP server
-        working-directory: packages/mcp-server
-        run: pnpm publish --access public --provenance --no-git-checks
+        run: |
+          VERSION="$(node -p "require('./packages/mcp-server/package.json').version")"
+          if npm view "@xctrace-analyzer/mcp-server@$VERSION" version >/dev/null 2>&1; then
+            echo "@xctrace-analyzer/mcp-server@$VERSION is already published"
+          else
+            npm publish ".release/xctrace-analyzer-mcp-server-$VERSION.tgz" --access public --provenance
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

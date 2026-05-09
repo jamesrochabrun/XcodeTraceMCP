@@ -69,12 +69,13 @@ Profile this app for hangs and tell me which of my code is responsible.
 Check this build for leaks and allocation churn.
 Analyze network activity.
 Launch this app and profile startup hangs.
+I will launch MyApp; record it for 60 seconds when it appears.
 Analyze this trace.
 Compare these two traces.
 Clean up profiling traces when we are done.
 ```
 
-The skill is the planner for this MCP server. It chooses between recording, existing trace analysis, single-template tracking, device/template checks, scoped hang follow-ups, trace comparisons, and safe cleanup once the user no longer needs the saved trace. The MCP server itself exposes execution tools only.
+The skill is the planner for this MCP server. It chooses between recording, existing trace analysis, single-template tracking, device/template checks, scoped hang follow-ups, trace comparisons, and safe cleanup once the user no longer needs the saved trace. When the user says they will launch the app manually, the skill starts watching for the app process immediately and attaches to the first valid PID without waiting for a second prompt. The MCP server itself exposes execution tools only.
 
 ### Tool Selection Guide
 
@@ -332,6 +333,22 @@ Claude: I'll record the running app with the Leaks template and analyze the trac
 
 ### Leaks Analysis
 3 leaks were detected.
+```
+
+### Manual Launch Recording
+
+```
+You: I will launch MyApp; record it for 60 seconds when it appears.
+
+Claude: I'm watching for MyApp now; launch it when ready.
+
+# Profiling Report
+
+- Target: MyApp PID 12345, attached immediately after launch
+- Duration: 60s
+- Preset: full
+- Trace: ~/Library/Application Support/xctrace-analyzer/traces/MyApp-full-...trace
+- Instruments.app: opened
 ```
 
 ### Basic Analysis

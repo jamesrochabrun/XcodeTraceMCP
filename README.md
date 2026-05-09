@@ -85,12 +85,13 @@ Profile this app for hangs and tell me which of my code is responsible.
 Check this build for leaks and allocation churn.
 Analyze network activity.
 Launch this app and profile startup hangs.
+I will launch MyApp; record it for 60 seconds when it appears.
 Analyze this trace.
 Compare these two traces.
 Clean up profiling traces when we are done.
 ```
 
-The skill is the user-facing planner. It chooses the target, selects the recording or analysis workflow, records or analyzes with `outputFormat: "both"` when diagnostics matter, can rerun `analyze_trace` with `timeRangeMs` around a hang so the final answer names app-owned code from `## Top User-Code Frames`, and offers `cleanup_traces` once the saved trace is no longer needed.
+The skill is the user-facing planner. It chooses the target, selects the recording or analysis workflow, records or analyzes with `outputFormat: "both"` when diagnostics matter, can wait for a manually launched app and attach to the first valid PID without a second prompt, can rerun `analyze_trace` with `timeRangeMs` around a hang so the final answer names app-owned code from `## Top User-Code Frames`, and offers `cleanup_traces` once the saved trace is no longer needed.
 
 Use the raw MCP tools directly only when building another integration, test, or scripted workflow.
 
@@ -351,6 +352,22 @@ Allocation volume and churn findings.
 Requests, failures, bytes transferred, and hosts.
 
 For iOS/iPadOS, use the `full-ios` preset to include Energy / Power data.
+```
+
+### Record a manual launch
+```
+You: I will launch MyApp; record it for 60 seconds when it appears.
+
+Claude:
+I'm watching for MyApp now; launch it when ready.
+
+# Profiling Report
+
+- Target: MyApp PID 12345, attached immediately after launch
+- Duration: 60s
+- Preset: full
+- Trace: ~/Library/Application Support/xctrace-analyzer/traces/MyApp-full-...trace
+- Instruments.app: opened
 ```
 
 ### Track a running app for leaks

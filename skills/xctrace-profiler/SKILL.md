@@ -78,11 +78,11 @@ Be the user-facing profiler for xctrace-analyzer. Users should ask in plain lang
    - `partial`: usable rows were parsed, but other schemas failed, were empty, or were skipped.
    - `not_exportable`: Xcode exposed schemas but no usable rows were exported; this is unavailable data, not "no issues."
    - `not_exportable` may also mean the GUI track exists in Instruments.app but `xcrun export --toc` does not expose an exportable table schema.
-   - `unsupported`: no matching schema was present in this trace TOC. This usually means the recording template/platform did not include that analysis family or Xcode did not expose it for this run; it does not mean the analyzer code is missing.
+   - `unsupported` is a structured status only; in human reports, phrase it as `not present in trace`. It means no matching schema was present in this trace TOC, usually because the recording template/platform did not include that analysis family or Xcode did not expose it for this run. It does not mean the analyzer code is missing.
    - If Time Profiler failed to parse, CPU attribution is unavailable for that run; inspect Export Diagnostics.
-   - If Leaks, Allocations, Memory, Network, or Energy are `unsupported` / `not_exportable`, say the automated MCP report cannot validate that area and use the opened Instruments trace for GUI verification.
-   - Memory is distinct from Allocations and Leaks. A macOS `full` run can show `Memory: unsupported` while Allocations/Leaks are present or `not_exportable`; that means the trace TOC did not expose generic memory/resident/dirty/VM schemas, not that allocation or leak recording was disabled.
-   - Energy / Power depends on the Power Profiler instrument. It is mainly for iOS/iPadOS; macOS `full` does not include it, and macOS Power Profiler recordings may be rejected by Xcode or absent from the TOC. Report that as platform/template support, not an analyzer implementation gap.
+   - If Leaks, Allocations, Memory, Network, or Energy are structurally `unsupported` / `not_exportable`, say the automated MCP report cannot validate that area and use the opened Instruments trace for GUI verification. Render `unsupported` as `not present in trace` for users.
+   - Memory is distinct from Allocations and Leaks. A macOS `full` run can show `Memory: not present in trace` while Allocations/Leaks are present or `not_exportable`; that means the trace TOC did not expose generic memory/resident/dirty/VM schemas, not that allocation or leak recording was disabled.
+   - Energy / Power depends on the Power Profiler instrument. It is mainly for iOS/iPadOS; macOS `full` does not include it, and macOS Power Profiler recordings may be rejected by Xcode or absent from the TOC. Report that as `not present in trace` due to platform/template/export availability, not an analyzer implementation gap.
 
 6. Follow up when needed.
    - For hangs, choose the longest Severe Hang, otherwise the longest Hang. Rerun `analyze_trace` on the saved trace with `timeRangeMs`: `startMs = max(0, hang.startMs - 500)`, `endMs = hang.startMs + hang.durationMs + 500`. Include the scoped report in the final answer; if rerunning is impossible, say why.
@@ -106,7 +106,7 @@ Include these sections when data is available:
 - `Top User-Code Frames`: full-run app-attributed frames with samples/time. If empty, explain whether Time Profiler was unavailable, no app frames matched, or better `userBinaryHints`/dSYM are needed.
 - `Scoped Severe Hang` or `Scoped Hang`: scoped window, contained hangs, scoped thread/slow-function stats, top scoped frames, and a short interpretation of what those frames suggest.
 - Requested domains such as `Leaks`, `Allocations`, `Memory`, `Network`, or `Energy / Power`: include metrics, top findings, and confidence caveats.
-- `Support Matrix`: every analysis family with `supported`, `partial`, `not_exportable`, or `unsupported` plus the reason. Explicitly distinguish "not present/exportable in this trace" from "no issue found."
+- `Support Matrix`: every analysis family with a clear human-facing status such as `supported`, `partial`, `not_exportable`, or `not present in trace` plus the reason. Explicitly distinguish "not present/exportable in this trace" from "no issue found."
 - `Export Diagnostics`: failed, empty, or skipped exports that affect confidence, especially TOC failures, Time Profiler parse failures, GUI-only tracks, empty Hangs schemas, HAR failures, Leaks, Allocations, Memory, Network, and Energy.
 - `Source Areas To Inspect`: file:line pointers found from relevant app frames, plus symbols/modules when file lookup is unavailable.
 - `Next Step`: the most useful next investigation step in Instruments.app or source, cleanup state for retained traces, and a proactive reminder that the user can ask to clear retained traces before ending the session.

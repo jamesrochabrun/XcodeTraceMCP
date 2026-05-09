@@ -244,6 +244,7 @@ describe('TraceParser', () => {
     expect(networkStatus).toEqual(
       expect.objectContaining({
         status: 'unsupported',
+        reason: expect.stringContaining('No Network table schema was present in this trace TOC'),
       })
     );
   });

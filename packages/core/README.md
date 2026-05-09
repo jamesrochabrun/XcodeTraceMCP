@@ -470,7 +470,7 @@ try {
 ## Production Notes
 
 - This package analyzes data that `xcrun xctrace export` exposes through TOC, XPath, and HAR exports.
-- It reports unsupported or non-exportable data explicitly instead of assuming Instruments.app GUI parity.
+- It reports data that is not present in the trace or not exportable explicitly instead of assuming Instruments.app GUI parity.
 - Large-trace streaming and broader template coverage are tracked as production hardening work, not current guarantees.
 
 ## License

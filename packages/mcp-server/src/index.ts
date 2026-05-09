@@ -37,6 +37,7 @@ import {
   ComparisonOptions,
   RecordOptions,
   TimeRangeMs,
+  SupportStatus,
   XCTraceCapabilities,
 } from '@xctrace-analyzer/core';
 
@@ -2208,10 +2209,14 @@ export class XCTraceAnalyzerServer {
     lines.push('## Support Matrix');
     for (const status of analysis.supportStatus) {
       lines.push(
-        `- ${this.instrumentSectionTitle(status.kind)}: ${status.status} - ${status.reason}`
+        `- ${this.instrumentSectionTitle(status.kind)}: ${this.supportStatusLabel(status.status)} - ${status.reason}`
       );
     }
     lines.push('');
+  }
+
+  private supportStatusLabel(status: SupportStatus): string {
+    return status === 'unsupported' ? 'not present in trace' : status;
   }
 
   private appendExportDiagnostics(lines: string[], analysis: Analysis): void {

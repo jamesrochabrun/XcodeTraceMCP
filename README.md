@@ -4,7 +4,7 @@
 
 Ask Claude to record and analyze Xcode Instruments traces, detect Time Profiler regressions, and get actionable optimization recommendations through a local MCP server.
 
-This project is an **Instruments companion**, not a full replacement for Instruments.app. It automates the parts Apple exposes through `xcrun xctrace`: recording, TOC/XML/HAR export, symbolication, parsing, reports, regression checks, and safe trace cleanup. Recording tools open the saved `.trace` in Instruments.app by default so unsupported or non-exportable areas can be verified in the GUI. When a template or Instruments view is not exportable, the server reports that limitation instead of inventing data.
+This project is an **Instruments companion**, not a full replacement for Instruments.app. It automates the parts Apple exposes through `xcrun xctrace`: recording, TOC/XML/HAR export, symbolication, parsing, reports, regression checks, and safe trace cleanup. Recording tools open the saved `.trace` in Instruments.app by default so areas that are not present in the trace or not exportable can be verified in the GUI. When a template or Instruments view is not exportable, the server reports that limitation instead of inventing data.
 
 ---
 
@@ -151,7 +151,7 @@ Claude: [Lists all templates on your system]
 
 ## Supported Scope
 
-This repository is a local MCP server distributed through npm/npx and usable from source. `profile_running_app` can attach to a process, launch a target, or record all processes with one combined `xcrun xctrace record` session, save the `.trace`, open it in Instruments.app by default, and analyze it. `track_running_app` records one specific template and also opens the saved trace by default. Recorded traces are retained so users can inspect them in Instruments.app; `cleanup_traces` previews or deletes `.trace` bundles after the user confirms they are no longer needed. `analyze_trace` auto-detects Time Profiler, Memory, Network, Energy, Allocations, and Leaks data exported by `xcrun xctrace`; each area is reported as supported, partial, not exportable, or unsupported. If a GUI track such as Leaks is visible in Instruments.app but `xcrun export --toc` exposes no exportable table schema, the report marks that family as `not_exportable`, not as "no issues." Existing traces can be scoped with `timeRangeMs` to answer "what ran during this hang window?" without re-recording, and Top User-Code Frames attribute Time Profiler samples to app binaries instead of system frames. If Time Profiler export or parsing fails, the report says it failed to parse instead of presenting zero-thread CPU data as a valid result. `compare_traces` remains focused on Time Profiler regressions. Full Instruments.app GUI parity remains out of scope.
+This repository is a local MCP server distributed through npm/npx and usable from source. `profile_running_app` can attach to a process, launch a target, or record all processes with one combined `xcrun xctrace record` session, save the `.trace`, open it in Instruments.app by default, and analyze it. `track_running_app` records one specific template and also opens the saved trace by default. Recorded traces are retained so users can inspect them in Instruments.app; `cleanup_traces` previews or deletes `.trace` bundles after the user confirms they are no longer needed. `analyze_trace` auto-detects Time Profiler, Memory, Network, Energy, Allocations, and Leaks data exported by `xcrun xctrace`; each area is reported as available, partial, not exportable, or not present in the trace. If a GUI track such as Leaks is visible in Instruments.app but `xcrun export --toc` exposes no exportable table schema, the report marks that family as `not_exportable`, not as "no issues." Existing traces can be scoped with `timeRangeMs` to answer "what ran during this hang window?" without re-recording, and Top User-Code Frames attribute Time Profiler samples to app binaries instead of system frames. If Time Profiler export or parsing fails, the report says it failed to parse instead of presenting zero-thread CPU data as a valid result. `compare_traces` remains focused on Time Profiler regressions. Full Instruments.app GUI parity remains out of scope.
 
 ---
 
@@ -252,7 +252,7 @@ Use this for an existing `.trace` file. The parser reads `xcrun xctrace export -
 It can report:
 - Time Profiler bottlenecks, hot functions, and recommendations
 - Additional Memory, Network, Energy, Allocations, and Leaks sections when Xcode exposes usable tables
-- Clear status when a family is `supported`, `partial`, `not_exportable`, or `unsupported`
+- Clear status when a family is available, partial, not exportable, or not present in the trace
 - Scoped Time Profiler samples and hang events with `timeRangeMs: { startMs, endMs }`
 - Top User-Code Frames, using trace process metadata plus optional `userBinaryHints`
 - A Time Profiler parse-failure message when CPU samples could not be parsed; this is an analyzer/export issue, not evidence of zero CPU work

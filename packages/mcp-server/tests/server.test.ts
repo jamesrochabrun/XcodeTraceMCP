@@ -826,6 +826,38 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).toContain('### Network Analysis');
   });
 
+  it('renders unsupported support status as not present in trace for Markdown reports', async () => {
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () =>
+        analysis({
+          supportStatus: [
+            {
+              kind: 'memory',
+              status: 'unsupported',
+              reason:
+                'No Memory table schema was present in this trace TOC, so automated generic memory metrics are unavailable.',
+              sourceSchemas: [],
+            },
+          ],
+        }),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async () => {},
+    });
+
+    const result = await server.callTool('analyze_trace', {
+      tracePath: '/tmp/app.trace',
+    });
+
+    expect(result.content[0].text).toContain(
+      '- Memory: not present in trace - No Memory table schema was present'
+    );
+    expect(result.content[0].text).not.toContain('- Memory: unsupported');
+  });
+
   it('adds next steps when analyze_trace cannot export the TOC', async () => {
     const server = new XCTraceAnalyzerServer({
       analyzeTraceFile: async () =>

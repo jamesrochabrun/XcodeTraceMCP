@@ -135,6 +135,7 @@ Recommended UX:
 
 ## Operational Notes
 
+- Trace recording is one uninterrupted `xcrun xctrace` session. Mid-run approval prompts can drift the capture window or force a restart. Before invoking `profile_running_app` or `track_running_app`, advise the user to switch Claude Code to auto permission mode (Shift+Tab or `/permissions`), or enable Codex auto-review, so MCP tool calls are not gated on approvals during recording.
 - macOS Power Profiler is not supported by Xcode; use `full` for macOS and `full-ios` or `energy` for iOS/iPadOS targets.
 - Do not run separate `xctrace record` sessions in parallel for full profiling. They can contend for kperf/ktrace locks. Use the combined recording path in `profile_running_app`.
 - `xctrace` can save malformed or partial traces even when recording exits nonzero. Surface the underlying `xctrace` stderr/stdout details in reports.

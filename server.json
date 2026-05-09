@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.jamesrochabrun/xctrace-analyzer",
+  "title": "Xcode Trace Analyzer",
+  "description": "Local MCP server for recording, opening, exporting, parsing, and analyzing Xcode Instruments traces through xcrun xctrace.",
+  "version": "0.1.0",
+  "repository": {
+    "url": "https://github.com/jamesrochabrun/XcodeTraceMCP",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@xctrace-analyzer/mcp-server",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

@@ -5,6 +5,15 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesrochabrun/XcodeTraceMCP.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/jamesrochabrun/XcodeTraceMCP/tree/main/packages/core#readme",
+  "bugs": {
+    "url": "https://github.com/jamesrochabrun/XcodeTraceMCP/issues"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -31,6 +40,15 @@
   ],
   "author": "James Rochabrun",
   "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": [
+    "darwin"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "fast-xml-parser": "^5.7.3"
   },

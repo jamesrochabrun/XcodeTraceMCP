@@ -9,8 +9,9 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { execFile as execFileCallback } from 'child_process';
+import { readFileSync } from 'fs';
 import { lstat, mkdir, mkdtemp, readdir, rm } from 'fs/promises';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import {
@@ -162,7 +163,9 @@ interface ResolvedSecurityOptions {
   redaction: RedactionMode;
 }
 
-const DEFAULT_TRACE_ROOT = 'test-traces';
+const SERVER_NAME = 'xctrace-analyzer';
+const SERVER_VERSION = readPackageVersion();
+const DEFAULT_TRACE_ROOT = getDefaultTraceRoot();
 const DEFAULT_MAX_DURATION_SECONDS = 300;
 const MAX_TOP_N = 100;
 const MAX_STRING_LENGTH = 4096;
@@ -187,8 +190,8 @@ export class XCTraceAnalyzerServer {
     this.security = resolveSecurityOptions(securityOptions);
     this.server = new Server(
       {
-        name: 'xctrace-analyzer',
-        version: '0.1.0',
+        name: SERVER_NAME,
+        version: SERVER_VERSION,
       },
       {
         capabilities: {
@@ -365,7 +368,7 @@ export class XCTraceAnalyzerServer {
             },
             outputDirectory: {
               type: 'string',
-              description: 'Directory where the .trace file should be saved (default: test-traces)',
+              description: 'Directory where the .trace file should be saved (default: configured trace root)',
             },
             outputPath: {
               type: 'string',
@@ -456,7 +459,7 @@ export class XCTraceAnalyzerServer {
             },
             outputDirectory: {
               type: 'string',
-              description: 'Directory where generated .trace files should be saved (default: test-traces)',
+              description: 'Directory where generated .trace files should be saved (default: configured trace root)',
             },
             analyze: {
               type: 'boolean',
@@ -525,7 +528,7 @@ export class XCTraceAnalyzerServer {
             },
             directory: {
               type: 'string',
-              description: 'Directory to scan for .trace bundles when tracePaths is omitted (default: test-traces).',
+              description: 'Directory to scan for .trace bundles when tracePaths is omitted (default: configured trace root).',
             },
             recursive: {
               type: 'boolean',
@@ -2497,6 +2500,48 @@ export class XCTraceAnalyzerServer {
   }
 }
 
+export interface XCTraceAnalyzerCliIo {
+  stdout: { write(chunk: string): unknown };
+  stderr: { write(chunk: string): unknown };
+}
+
+export async function runCli(
+  argv: string[] = process.argv.slice(2),
+  io: XCTraceAnalyzerCliIo = { stdout: process.stdout, stderr: process.stderr },
+  deps: XCTraceAnalyzerDependencies = defaultDependencies
+): Promise<number> {
+  const [command, ...extraArgs] = argv;
+
+  if (!command) {
+    const server = new XCTraceAnalyzerServer(deps);
+    await server.start();
+    return 0;
+  }
+
+  if (extraArgs.length > 0) {
+    io.stderr.write(`Unexpected arguments: ${extraArgs.join(' ')}\n`);
+    io.stderr.write(formatCliHelp());
+    return 2;
+  }
+
+  switch (command) {
+    case '--version':
+    case '-v':
+      io.stdout.write(`${SERVER_NAME} ${SERVER_VERSION}\n`);
+      return 0;
+    case '--help':
+    case '-h':
+      io.stdout.write(formatCliHelp());
+      return 0;
+    case '--check':
+      return runXctraceHealthCheck(io, deps);
+    default:
+      io.stderr.write(`Unknown argument: ${command}\n`);
+      io.stderr.write(formatCliHelp());
+      return 2;
+  }
+}
+
 function resolveSecurityOptions(options: XCTraceAnalyzerSecurityOptions): ResolvedSecurityOptions {
   const maxDurationSeconds =
     options.maxDurationSeconds ??
@@ -2518,6 +2563,109 @@ function resolveSecurityOptions(options: XCTraceAnalyzerSecurityOptions): Resolv
     traceRoot: resolve(options.traceRoot ?? process.env.XCTRACE_ANALYZER_TRACE_ROOT ?? DEFAULT_TRACE_ROOT),
     maxDurationSeconds,
     redaction: options.redaction ?? envRedactionMode() ?? 'balanced',
+  };
+}
+
+function readPackageVersion(): string {
+  try {
+    const packageJsonPath = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as { version?: unknown };
+    return typeof packageJson.version === 'string' ? packageJson.version : '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
+export function getDefaultTraceRoot(): string {
+  return join(homedir(), 'Library', 'Application Support', 'xctrace-analyzer', 'traces');
+}
+
+function formatCliHelp(): string {
+  return [
+    'xctrace-analyzer-mcp',
+    '',
+    'Usage:',
+    '  xctrace-analyzer-mcp              Start the MCP stdio server',
+    '  xctrace-analyzer-mcp --check      Check local xcrun xctrace availability',
+    '  xctrace-analyzer-mcp --version    Print the server version',
+    '  xctrace-analyzer-mcp --help       Show this help',
+    '',
+    'Claude Code install:',
+    '  claude mcp add --transport stdio --scope user xctrace-analyzer -- npx -y @xctrace-analyzer/mcp-server',
+    '',
+    `Default trace root: ${DEFAULT_TRACE_ROOT}`,
+    'Override with XCTRACE_ANALYZER_TRACE_ROOT=/path/to/traces.',
+    '',
+  ].join('\n');
+}
+
+async function runXctraceHealthCheck(
+  io: XCTraceAnalyzerCliIo,
+  deps: XCTraceAnalyzerDependencies
+): Promise<number> {
+  try {
+    const security = resolveSecurityOptions({});
+    const available = await deps.isXCTraceAvailable();
+    io.stdout.write(`${SERVER_NAME}: ${SERVER_VERSION}\n`);
+
+    if (!available) {
+      io.stdout.write('xcrun xctrace: unavailable\n');
+      io.stdout.write('Install Xcode or Xcode Command Line Tools, then run xcode-select --install if needed.\n');
+      return 1;
+    }
+
+    const capabilities = deps.getXCTraceCapabilities
+      ? await deps.getXCTraceCapabilities()
+      : await fallbackCapabilities(deps);
+
+    io.stdout.write('xcrun xctrace: available\n');
+    if (capabilities.version) {
+      io.stdout.write(`version: ${redactText(capabilities.version, 'balanced', true)}\n`);
+    }
+    io.stdout.write(`templates: ${capabilities.templates.length}\n`);
+    io.stdout.write(`devices: ${capabilities.devices.length}\n`);
+    io.stdout.write(`instruments: ${capabilities.instruments.length}\n`);
+    io.stdout.write(`export modes: ${capabilities.exportModes.join(', ') || 'none detected'}\n`);
+    io.stdout.write(`record modes: ${capabilities.recordModes.join(', ') || 'none detected'}\n`);
+    io.stdout.write(`symbolication: ${capabilities.supportsSymbolication ? 'supported' : 'not detected'}\n`);
+    io.stdout.write(`trace root: ${security.traceRoot}\n`);
+
+    if (capabilities.warnings.length > 0) {
+      io.stdout.write('warnings:\n');
+      for (const warning of capabilities.warnings) {
+        io.stdout.write(`- ${redactText(warning, 'balanced', true)}\n`);
+      }
+    }
+
+    return 0;
+  } catch (error) {
+    io.stderr.write(`xcrun xctrace check failed: ${formatCliError(error)}\n`);
+    return 1;
+  }
+}
+
+function formatCliError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return redactText(message, 'balanced', true);
+}
+
+async function fallbackCapabilities(deps: XCTraceAnalyzerDependencies): Promise<XCTraceCapabilities> {
+  const [version, templates, devices] = await Promise.all([
+    deps.getXCTraceVersion(),
+    deps.listTemplates(),
+    deps.listDevices(),
+  ]);
+
+  return {
+    available: true,
+    version,
+    templates,
+    devices,
+    instruments: [],
+    exportModes: [],
+    recordModes: [],
+    supportsSymbolication: false,
+    warnings: [],
   };
 }
 
@@ -2609,8 +2757,11 @@ function formatHangDuration(ms: number): string {
 }
 
 if (isMainModule()) {
-  const server = new XCTraceAnalyzerServer();
-  server.start().catch((error) => {
+  runCli().then((exitCode) => {
+    if (exitCode !== 0) {
+      process.exit(exitCode);
+    }
+  }).catch((error) => {
     console.error('Failed to start server:', error);
     process.exit(1);
   });

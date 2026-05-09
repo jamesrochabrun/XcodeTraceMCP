@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { XCTraceAnalyzerServer } from '../src/index.js';
+import { getDefaultTraceRoot, runCli, XCTraceAnalyzerServer } from '../src/index.js';
 import { Analysis, Comparison, RecordOptions } from '@xctrace-analyzer/core';
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
@@ -90,7 +90,73 @@ const allowLaunchAndExternalOutput = {
   allowExternalTraceOutput: true,
 };
 
+function cliIo() {
+  let stdout = '';
+  let stderr = '';
+
+  return {
+    io: {
+      stdout: { write: (chunk: string) => { stdout += chunk; } },
+      stderr: { write: (chunk: string) => { stderr += chunk; } },
+    },
+    get stdout() {
+      return stdout;
+    },
+    get stderr() {
+      return stderr;
+    },
+  };
+}
+
 describe('XCTraceAnalyzerServer', () => {
+  it('prints version information from the package CLI', async () => {
+    const output = cliIo();
+
+    const exitCode = await runCli(['--version'], output.io);
+
+    expect(exitCode).toBe(0);
+    expect(output.stdout).toBe('xctrace-analyzer 0.1.0\n');
+    expect(output.stderr).toBe('');
+  });
+
+  it('prints a concise xctrace health check from the package CLI', async () => {
+    const output = cliIo();
+
+    const exitCode = await runCli(['--check'], output.io, {
+      analyzeTraceFile: async () => analysis(),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => ['Time Profiler'],
+      listDevices: async () => ['Mac'],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0',
+      getXCTraceCapabilities: async () => ({
+        available: true,
+        version: 'xctrace version 16.0',
+        templates: ['Time Profiler'],
+        devices: ['Mac'],
+        instruments: ['Allocations'],
+        exportModes: ['toc', 'xml'],
+        recordModes: ['attach'],
+        supportsSymbolication: true,
+        warnings: ['token=abc123'],
+      }),
+      recordTrace: async () => {},
+    });
+
+    expect(exitCode).toBe(0);
+    expect(output.stdout).toContain('xctrace-analyzer: 0.1.0');
+    expect(output.stdout).toContain('xcrun xctrace: available');
+    expect(output.stdout).toContain('templates: 1');
+    expect(output.stdout).toContain('trace root: ');
+    expect(output.stdout).toContain(getDefaultTraceRoot());
+    expect(output.stdout).toContain('token=<redacted>');
+    expect(output.stderr).toBe('');
+  });
+
+  it('uses a stable user-level trace root by default', async () => {
+    expect(getDefaultTraceRoot()).toContain('Library/Application Support/xctrace-analyzer/traces');
+  });
+
   it('formats analysis output with clear slow function statistics', async () => {
     const server = new XCTraceAnalyzerServer({
       analyzeTraceFile: async () => analysis(),

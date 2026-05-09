@@ -30,11 +30,10 @@ The core package is the reusable analysis layer behind the MCP server. It does n
 ## Installation
 
 ```bash
-pnpm install --frozen-lockfile
-pnpm build
+npm install @xctrace-analyzer/core
 ```
 
-This MVP is intended for local repo usage. Public npm publishing is future work.
+For source development, run `pnpm install --frozen-lockfile` and `pnpm build` from the monorepo root.
 
 ## Quick Start
 

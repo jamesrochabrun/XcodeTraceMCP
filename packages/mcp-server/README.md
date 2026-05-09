@@ -20,18 +20,28 @@ It is an **honest Instruments companion**, not a complete GUI replacement. Recor
 
 ## Installation
 
-### Using with Claude Desktop
+### Claude Code
 
-Add to your Claude Desktop configuration file:
+```bash
+claude mcp add --transport stdio --scope user xctrace-analyzer -- npx -y @xctrace-analyzer/mcp-server
+```
 
-**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+Verify the local machine has a usable `xcrun xctrace`:
+
+```bash
+npx -y @xctrace-analyzer/mcp-server --check
+```
+
+### Claude Desktop
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "xctrace-analyzer": {
-      "command": "node",
-      "args": ["/path/to/XcodeTraceMCP/packages/mcp-server/dist/index.js"]
+      "command": "npx",
+      "args": ["-y", "@xctrace-analyzer/mcp-server"]
     }
   }
 }
@@ -83,7 +93,7 @@ Attach profiling and trace analysis work by default. The secure defaults do not 
 | --- | --- | --- |
 | `XCTRACE_ANALYZER_ALLOW_LAUNCH=1` | Disabled | Enables true startup/cold-launch profiling. It is disabled by default because `launchCommand` asks the MCP server to execute a local program through `xcrun xctrace --launch`. |
 | `XCTRACE_ANALYZER_ALLOW_ALL_PROCESSES=1` | Disabled | Enables system-wide traces when one process is not enough. It is disabled by default because the trace can include unrelated apps, services, paths, URLs, and symbols. |
-| `XCTRACE_ANALYZER_TRACE_ROOT=/path/to/traces` | `test-traces` | Sets the allowed trace output root. Keeping traces in one ignored folder reduces accidental repo churn and makes cleanup safer. |
+| `XCTRACE_ANALYZER_TRACE_ROOT=/path/to/traces` | `~/Library/Application Support/xctrace-analyzer/traces` | Sets the allowed trace output root. Keeping traces in one user-level folder reduces accidental project churn and makes cleanup safer. |
 | `XCTRACE_ANALYZER_ALLOW_EXTERNAL_OUTPUT=1` | Disabled | Allows `outputPath`, `outputDirectory`, `targetStdin`, and `targetStdout` outside the trace root. It is useful for CI or shared scratch volumes, but broadens where the MCP server can write. |
 | `XCTRACE_ANALYZER_ALLOW_EXTERNAL_CLEANUP=1` | Disabled | Allows destructive cleanup outside the trace root. It is useful for maintenance of a trusted trace archive, but should be paired with a dry run or exact trace paths. |
 | `XCTRACE_ANALYZER_MAX_DURATION_SECONDS=300` | `300` | Caps recording duration to avoid accidental long-running captures and very large `.trace` bundles. Raise it only for expected long repros. |
@@ -92,7 +102,7 @@ Attach profiling and trace analysis work by default. The secure defaults do not 
 For startup profiling with the default security posture, manually launch the app and attach by exact PID as soon as it appears. For trusted local launch profiling, start the server with:
 
 ```bash
-XCTRACE_ANALYZER_ALLOW_LAUNCH=1 pnpm --filter @xctrace-analyzer/mcp-server start
+XCTRACE_ANALYZER_ALLOW_LAUNCH=1 npx -y @xctrace-analyzer/mcp-server
 ```
 
 Claude Desktop-style MCP configs can pass the same settings through `env`:
@@ -101,11 +111,11 @@ Claude Desktop-style MCP configs can pass the same settings through `env`:
 {
   "mcpServers": {
     "xctrace-analyzer": {
-      "command": "node",
-      "args": ["/path/to/XcodeTraceMCP/packages/mcp-server/dist/index.js"],
+      "command": "npx",
+      "args": ["-y", "@xctrace-analyzer/mcp-server"],
       "env": {
         "XCTRACE_ANALYZER_ALLOW_LAUNCH": "1",
-        "XCTRACE_ANALYZER_TRACE_ROOT": "/path/to/XcodeTraceMCP/test-traces"
+        "XCTRACE_ANALYZER_TRACE_ROOT": "/Users/you/Library/Application Support/xctrace-analyzer/traces"
       }
     }
   }
@@ -123,7 +133,7 @@ Record a running app once with a profiling preset and return one combined report
 - `preset` (optional): `full`, `full-ios`, `cpu`, `memory`, `network`, or `energy` (default: `full`)
 - `durationSeconds` (optional): Total recording duration in seconds (default: 60)
 - `device` (optional): Device or simulator name/UDID
-- `outputDirectory` (optional): Directory where generated `.trace` files should be saved (default: `test-traces`)
+- `outputDirectory` (optional): Directory where generated `.trace` files should be saved (default: configured trace root)
 - `analyze` (optional): Analyze after recording (default: true)
 - `openInInstruments` (optional): Open the saved `.trace` in Instruments.app after recording (default: true). Set false for CI or headless runs.
 - `outputFormat` (optional): `markdown`, `json`, or `both` (default: `markdown`)
@@ -166,7 +176,7 @@ Attach to a running process with `xcrun xctrace record`, save the generated `.tr
 - `template` (optional): Instruments template, for example `Leaks`, `Allocations`, `Network`, `Power Profiler`, or `Time Profiler` (default: `Leaks`)
 - `durationSeconds` (optional): Recording duration in seconds (default: 60)
 - `device` (optional): Device or simulator name/UDID
-- `outputDirectory` (optional): Directory where the `.trace` file should be saved (default: `test-traces`)
+- `outputDirectory` (optional): Directory where the `.trace` file should be saved (default: configured trace root)
 - `outputPath` (optional): Exact output `.trace` path. Overrides `outputDirectory`
 - `analyze` (optional): Analyze after recording (default: true)
 - `openInInstruments` (optional): Open the saved `.trace` in Instruments.app after recording (default: true). Set false for CI or headless runs.
@@ -232,7 +242,7 @@ Preview or delete `.trace` bundles created by profiling runs.
 
 **Parameters:**
 - `tracePaths` (optional): Exact `.trace` paths to preview or delete. This is the preferred post-report cleanup path.
-- `directory` (optional): Directory to scan when `tracePaths` is omitted (default: `test-traces`)
+- `directory` (optional): Directory to scan when `tracePaths` is omitted (default: configured trace root)
 - `recursive` (optional): Recursively scan subdirectories in directory mode (default: false)
 - `olderThanMinutes` (optional): Only match traces older than this many minutes. Required for destructive directory cleanup.
 - `dryRun` (optional): Preview only by default. Set false after the user confirms deletion.
@@ -299,7 +309,7 @@ Claude: I'll record the full profiling preset and combine the results.
 - Traces analyzed: 1/1
 
 ## Trace Files
-- Time Profiler: /path/to/test-traces/MyApp-full-...trace
+- Time Profiler: ~/Library/Application Support/xctrace-analyzer/traces/MyApp-full-...trace
 ## Prioritized Recommendations
 - critical Leaks Analysis: Leaks detected - The trace contains leaked memory.
 ```
@@ -316,7 +326,7 @@ Claude: I'll record the running app with the Leaks template and analyze the trac
 - Process: MyApp
 - Template: Leaks
 - Duration: 60s
-- Trace: /path/to/XcodeTraceMCP/test-traces/MyApp-Leaks-2026-05-02T16-30-00-000Z.trace
+- Trace: ~/Library/Application Support/xctrace-analyzer/traces/MyApp-Leaks-2026-05-02T16-30-00-000Z.trace
 
 ## Additional Instrument Analysis
 
@@ -499,6 +509,9 @@ pnpm build
 
 # Typecheck, test, and build
 pnpm verify
+
+# Start the built server, initialize MCP, and verify tools/list
+pnpm test:mcp-smoke
 
 # Inspect schemas exposed by local traces
 pnpm inspect:trace test-traces/memory.trace

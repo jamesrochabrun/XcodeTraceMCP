@@ -4,7 +4,7 @@
 
 This MCP server provides AI assistants like Claude with the ability to automate `xcrun xctrace` workflows: record traces, symbolicate traces, export TOC/XML/HAR data, detect Time Profiler bottlenecks, summarize exportable Memory/Network/Energy/Allocations/Leaks data, identify Time Profiler regressions, clean up generated traces, and provide actionable recommendations.
 
-It is an **honest Instruments companion**, not a complete GUI replacement. Recording tools open the saved `.trace` in Instruments.app by default, and any template or view that `xctrace` cannot export is reported as unsupported or not exportable.
+It is an **honest Instruments companion**, not a complete GUI replacement. Recording tools open the saved `.trace` in Instruments.app by default, and any template or view that is absent from the trace or not exportable through `xctrace` is reported explicitly.
 
 ## Features
 
@@ -145,7 +145,7 @@ Preset recordings:
 - `cpu`: Time Profiler
 - `memory`: Allocations base with Leaks instrument
 - `network`: Time Profiler base with HTTP Traffic instrument
-- `energy`: Power Profiler. This is for iOS/iPadOS targets; Xcode reports it as unsupported for macOS recordings.
+- `energy`: Power Profiler. This is for iOS/iPadOS targets; Xcode commonly does not expose Power Profiler data for macOS recordings.
 
 Report contents:
 - Recording metadata: process, preset, duration, trace path, base template, instruments, and Instruments.app open status
@@ -207,7 +207,7 @@ Analyze a single trace file for performance issues. The server auto-detects supp
 - `userBinaryHints` (optional): app or module names used when trace metadata cannot identify user binaries
 - `outputFormat` (optional): `markdown`, `json`, or `both`
 
-The report distinguishes unsupported data from non-exportable data. A Time Profiler parse failure is reported as a failed CPU analysis with Export Diagnostics; do not read it as zero CPU work.
+The report distinguishes data that is not present in the trace from data that is present but not exportable. A Time Profiler parse failure is reported as a failed CPU analysis with Export Diagnostics; do not read it as zero CPU work.
 
 Scoped analysis filters Time Profiler samples before function aggregation and filters hang events that overlap the requested window. Top User-Code Frames walks each sample backtrace from leaf to root and aggregates the deepest frame whose module matches the trace's user process names or `userBinaryHints`.
 

@@ -992,7 +992,20 @@ export class TraceParser {
         return `xctrace exposed ${kind} schemas, but no usable rows were exported.`;
       }
       case 'unsupported':
-        return `The trace TOC does not expose ${kind} schemas.`;
+        return this.unsupportedReason(kind);
+    }
+  }
+
+  private unsupportedReason(kind: TraceKind): string {
+    switch (kind) {
+      case 'memory':
+        return 'No Memory table schema was present in this trace TOC, so automated generic memory metrics are unavailable for this recording/template/platform. Memory is separate from Allocations and Leaks; check those sections or Instruments.app separately.';
+      case 'energy':
+        return 'No Energy / Power table schema was present in this trace TOC, so automated energy analysis is unavailable for this recording/template/platform. Power Profiler is mainly for iOS/iPadOS and may be absent from macOS full recordings.';
+      default: {
+        const section = this.instrumentSectionName(kind);
+        return `No ${section} table schema was present in this trace TOC, so automated ${section} analysis is unavailable for this recording/template/platform. This is not evidence that no issue exists.`;
+      }
     }
   }
 

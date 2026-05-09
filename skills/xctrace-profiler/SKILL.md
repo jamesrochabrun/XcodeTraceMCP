@@ -70,6 +70,7 @@ Be the user-facing profiler for xctrace-analyzer. Users should ask in plain lang
    - Use temp or ignored output locations such as `test-traces/`; do not commit `.trace` files.
    - Secure defaults block launch profiling, all-process recording, external trace output, and destructive cleanup outside the trace root unless the MCP server was explicitly configured to allow them.
    - Keep recorded traces until the user has had a chance to inspect Instruments.app or asks for cleanup.
+   - At the end of every report that retains a generated trace, proactively remind the user to ask for trace cleanup before ending the session if they are done inspecting it. Do not delete automatically.
    - Use `check_xctrace`, `list_templates`, or `list_devices` only for setup, device selection, or troubleshooting.
 
 5. Interpret support status before conclusions.
@@ -108,4 +109,4 @@ Include these sections when data is available:
 - `Support Matrix`: every analysis family with `supported`, `partial`, `not_exportable`, or `unsupported` plus the reason. Explicitly distinguish "not present/exportable in this trace" from "no issue found."
 - `Export Diagnostics`: failed, empty, or skipped exports that affect confidence, especially TOC failures, Time Profiler parse failures, GUI-only tracks, empty Hangs schemas, HAR failures, Leaks, Allocations, Memory, Network, and Energy.
 - `Source Areas To Inspect`: file:line pointers found from relevant app frames, plus symbols/modules when file lookup is unavailable.
-- `Next Step`: the most useful next investigation step in Instruments.app or source, and cleanup state for retained traces.
+- `Next Step`: the most useful next investigation step in Instruments.app or source, cleanup state for retained traces, and a proactive reminder that the user can ask to clear retained traces before ending the session.

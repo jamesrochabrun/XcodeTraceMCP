@@ -47,6 +47,18 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 }
 ```
 
+### Codex CLI
+
+```bash
+codex mcp add xctrace-analyzer -- npx -y @xctrace-analyzer/mcp-server
+```
+
+Check that Codex registered the server:
+
+```bash
+codex mcp list
+```
+
 ### Building from Source
 
 ```bash
@@ -121,6 +133,15 @@ Claude Desktop-style MCP configs can pass the same settings through `env`:
     }
   }
 }
+```
+
+Codex can pass the same settings with `--env`:
+
+```bash
+codex mcp add xctrace-analyzer \
+  --env XCTRACE_ANALYZER_ALLOW_LAUNCH=1 \
+  --env XCTRACE_ANALYZER_TRACE_ROOT="/Users/you/Library/Application Support/xctrace-analyzer/traces" \
+  -- npx -y @xctrace-analyzer/mcp-server
 ```
 
 ### `profile_running_app`

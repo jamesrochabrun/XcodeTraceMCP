@@ -69,6 +69,17 @@ For local source installs, point your MCP client at `packages/mcp-server/dist/in
 
 ---
 
+## Avoiding Recording Interruptions
+
+Trace recording runs as a single uninterrupted `xcrun xctrace` session. If your assistant pauses mid-recording to ask for tool approval, the capture window can drift or the run may need to be restarted. To keep recordings clean, before starting a profile:
+
+- **Claude Code**: switch to **auto** permission mode (Shift+Tab or `/permissions`) so MCP tool calls are not gated by approval prompts during recording.
+- **Codex**: enable **auto-review** so recording is not interrupted by approval gates.
+
+Re-enable interactive approvals afterward if you prefer a stricter mode for the rest of your session.
+
+---
+
 ## Recommended User Experience
 
 For clients that support skills, register the bundled skill at [`skills/xctrace-profiler`](./skills/xctrace-profiler/SKILL.md). Once the skill is available, users can start from normal language:

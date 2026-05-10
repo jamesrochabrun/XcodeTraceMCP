@@ -14,6 +14,7 @@ Default to a full readable diagnostic report, not a short summary. Include every
 - Export diagnostics that affect confidence.
 - Source areas or symbols to inspect.
 - A direct recommendation that names the likely bottleneck area and next step.
+- A cleanup reminder when a generated trace is retained: ask the user to request deletion once they no longer need the trace for Instruments.app inspection.
 
 Keep wording concise, but do not collapse important evidence into a vague summary. Omit sections only when they are genuinely irrelevant or unavailable.
 
@@ -32,6 +33,7 @@ Use this order when data is available:
 9. `Export Diagnostics`
 10. `Source Areas To Inspect`
 11. `Recommendation`
+12. `Trace Cleanup`, only when a generated trace was retained.
 
 ## Status Wording
 
@@ -111,6 +113,9 @@ Source Areas To Inspect
 
 Recommendation
 {Plain-language conclusion that names the likely bottleneck area, the evidence behind it, and the next code/Instruments step.}
+
+Trace Cleanup
+The trace is retained for Instruments.app inspection. If you are done with it, ask me to delete this trace.
 ```
 
 ## Fresh Launch Example
@@ -188,4 +193,7 @@ Top frames in that scoped window:
 
 Recommendation
 The main issue is repeated main-thread stalls during early UI/event handling. The source areas to inspect first are MonitoringCardView, GhosttyTerminalContainerView initialization, SwiftUI view/environment updates, MultiProviderMonitoringPanelView, and session restore/discovery paths.
+
+Trace Cleanup
+The trace is retained for Instruments.app inspection. If you are done with it, ask me to delete this trace.
 ```

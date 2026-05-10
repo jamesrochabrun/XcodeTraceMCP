@@ -1,6 +1,6 @@
 {
   "name": "@xctrace-analyzer/mcp-server",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "MCP server for Xcode Instruments trace analysis",
   "mcpName": "io.github.jamesrochabrun/xctrace-analyzer",
   "type": "module",
@@ -25,9 +25,11 @@
     "url": "https://github.com/jamesrochabrun/XcodeTraceMCP/issues"
   },
   "files": [
-    "dist"
+    "dist",
+    "skills"
   ],
   "scripts": {
+    "prepack": "node ../../scripts/sync-mcp-skill-assets.mjs",
     "build": "tsc",
     "typecheck": "tsc --noEmit --tsBuildInfoFile typecheck.tsbuildinfo",
     "dev": "tsc --watch",

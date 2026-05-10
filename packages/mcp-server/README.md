@@ -71,7 +71,7 @@ pnpm verify
 
 ### Recommended User Experience
 
-For human-facing use, register the bundled skill at [`../../skills/xctrace-profiler`](../../skills/xctrace-profiler/SKILL.md) in clients that support skills. Then users can stay at the prompt level:
+For human-facing use, register the bundled skill in clients that support skills. Source checkouts provide it at [`../../skills/xctrace-profiler`](../../skills/xctrace-profiler/SKILL.md); npm installs include it at `node_modules/@xctrace-analyzer/mcp-server/skills/xctrace-profiler`. Then users can stay at the prompt level:
 
 ```text
 Profile this app.

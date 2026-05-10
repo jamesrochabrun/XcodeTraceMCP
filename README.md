@@ -2,15 +2,11 @@
 
 > Intelligent performance analysis for Xcode Instruments traces, powered by AI via Model Context Protocol.
 
-Ask your Agent to record and analyze Xcode Instruments traces, detect Time Profiler regressions, and get actionable optimization recommendations through a local MCP server.
+Ask Claude to record and analyze Xcode Instruments traces, detect Time Profiler regressions, and get actionable optimization recommendations through a local MCP server.
 
 This project is an **Instruments companion**, not a full replacement for Instruments.app. It automates the parts Apple exposes through `xcrun xctrace`: recording, TOC/XML/HAR export, symbolication, parsing, reports, regression checks, and safe trace cleanup. Recording tools open the saved `.trace` in Instruments.app by default so areas that are not present in the trace or not exportable can be verified in the GUI. When a template or Instruments view is not exportable, the server reports that limitation instead of inventing data.
 
 ---
-
-## Example
-
-https://github.com/user-attachments/assets/1ac90e8b-3d4c-42ad-b655-6a64eb966485
 
 ## Installation
 
@@ -94,7 +90,7 @@ For local source installs, point your MCP client at `packages/mcp-server/dist/in
 
 ---
 
-## 🚨 Avoiding Recording Interruptions
+## Avoiding Recording Interruptions
 
 Trace recording runs as a single uninterrupted `xcrun xctrace` session. If your assistant pauses mid-recording to ask for tool approval, the capture window can drift or the run may need to be restarted. To keep recordings clean, before starting a profile:
 
@@ -107,7 +103,7 @@ Re-enable interactive approvals afterward if you prefer a stricter mode for the 
 
 ## Recommended User Experience
 
-For clients that support skills, register the bundled skill at [`skills/xctrace-profiler`](./skills/xctrace-profiler/SKILL.md). Once the skill is available, users can start from normal language:
+For clients that support skills, register the bundled skill at [`skills/xctrace-profiler`](./skills/xctrace-profiler/SKILL.md). npm installs also include the same skill at `node_modules/@xctrace-analyzer/mcp-server/skills/xctrace-profiler`. Once the skill is available, users can start from normal language:
 
 ```text
 Profile this app.

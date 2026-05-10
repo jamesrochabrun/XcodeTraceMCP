@@ -18,7 +18,15 @@ const packages = [
     dir: 'packages/mcp-server',
     name: '@xctrace-analyzer/mcp-server',
     mcpName: 'io.github.jamesrochabrun/xctrace-analyzer',
-    requiredFiles: ['package/dist/index.js', 'package/dist/index.d.ts', 'package/README.md', 'package/LICENSE'],
+    requiredFiles: [
+      'package/dist/index.js',
+      'package/dist/index.d.ts',
+      'package/README.md',
+      'package/LICENSE',
+      'package/skills/xctrace-profiler/SKILL.md',
+      'package/skills/xctrace-profiler/agents/openai.yaml',
+      'package/skills/xctrace-profiler/references/report.md',
+    ],
   },
 ];
 

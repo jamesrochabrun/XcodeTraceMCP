@@ -45,10 +45,12 @@ Be the user-facing profiler for xctrace-analyzer. Users should ask in plain lang
 2. Establish the target.
    - Inspect the project for obvious Xcode targets, schemes, bundle names, app products, or trace paths before asking.
    - If shell access is available and the app may already be running, discover candidate PIDs and prefer the exact PID.
-   - Use attach-by-PID for already-running apps, especially when several processes share a name.
+   - For already-running apps, use attach-by-PID immediately, especially when several processes share a name. Do not ask launch-prep questions for active app profiling.
    - Use launch mode only for explicit startup/cold-launch profiling.
-   - If the user says "I will launch MyApp; record for 60 seconds", "record my app on launch", "profile when I launch it", or similar, treat that as permission to arm manual-launch observation immediately. Do not ask for another confirmation and do not wait for the user to say the app has launched.
-   - For manual launch observation, infer or ask once for the expected executable, bundle process, app name, or bundle id if it is not discoverable. Then poll every 200-500 ms for up to 60 seconds while the user launches the app. As soon as one valid PID is visible, call the recording tool with `target: "attach"`, `processName` set to that exact PID, and `durationSeconds` set from the user's requested duration so recording starts as close to launch as possible.
+   - For launch or startup prompts such as "get ready, I will launch my app", "record my app on launch", "profile when I launch it", or "cold launch profile", first establish what process should be watched.
+   - If exactly one likely app target is discoverable, announce it and start manual-launch observation immediately: "I found MyApp. I'm watching for its PID now; launch it when ready."
+   - If the app identity is missing or ambiguous, ask one concise question for the app name, bundle id, app path, or scheme, and offer observation as the easy fallback: "I can also start observing now and you can launch it after I say I'm watching."
+   - Once manual launch observation starts, poll every 200-500 ms for up to 60 seconds while the user launches the app. As soon as one valid PID is visible, call the recording tool with `target: "attach"`, `processName` set to that exact PID, and `durationSeconds` set from the user's requested duration so recording starts as close to launch as possible.
    - While observing, a short status such as "I'm watching for MyApp now; launch it when ready." is enough. Keep polling after sending that status.
    - If multiple matching PIDs appear during observation, prefer the newest app executable PID over helper processes. If ambiguity remains, keep observing briefly for a stable main-app PID; ask only if the candidates are still ambiguous.
    - If no PID appears before the observation timeout, tell the user no launch was detected and ask them to relaunch or provide the exact app name, bundle id, or PID.
@@ -67,7 +69,8 @@ Be the user-facing profiler for xctrace-analyzer. Users should ask in plain lang
    - Use `outputFormat: "both"` for profiling, trace analysis, and scoped follow-up analysis unless the user explicitly requests only Markdown or only JSON. The structured result preserves `supportStatus`, `exportAttempts`, hang timing, and user-code frame details needed for a complete report.
    - Recording tools open the saved `.trace` in Instruments.app by default with `openInInstruments: true`; pass `false` only for CI or headless automation.
    - Use `durationSeconds: 60` by default; use 20-30 seconds only for explicit startup checks or longer when the repro needs it.
-   - Use temp or ignored output locations such as `test-traces/`; do not commit `.trace` files.
+   - For normal recordings, omit `outputDirectory` and let the MCP server write under its configured trace root.
+   - Use repo-local or temp output locations such as `test-traces/` only when `XCTRACE_ANALYZER_TRACE_ROOT` points there or `XCTRACE_ANALYZER_ALLOW_EXTERNAL_OUTPUT=1` is explicitly enabled. If an external output path is rejected, retry immediately without `outputDirectory`.
    - Secure defaults block launch profiling, all-process recording, external trace output, and destructive cleanup outside the trace root unless the MCP server was explicitly configured to allow them.
    - Keep recorded traces until the user has had a chance to inspect Instruments.app or asks for cleanup.
    - At the end of every report that retains a generated trace, proactively remind the user to ask for trace cleanup before ending the session if they are done inspecting it. Do not delete automatically.
@@ -95,18 +98,6 @@ Be the user-facing profiler for xctrace-analyzer. Users should ask in plain lang
 
 ## Detailed Report Shape
 
-For profiling and trace-analysis reports, default to a detailed diagnostic report, not a short summary. Use concise prose, but include all relevant evidence from the Markdown and structured result. Only be terse for setup checks, cleanup, template/device listing, or when the user explicitly asks for a brief answer.
+For profiling and trace-analysis reports, default to a full readable diagnostic report, not a short summary. Include everything meaningful the run found: exported hangs, support/export limitations, full-run user-code frames, scoped hang-window frames, requested domain findings, source areas, and recommendations.
 
-Include these sections when data is available:
-
-- `Trace`: target app/process/PID, attach vs launch timing, duration, preset/template and instruments, trace path, Instruments.app open status, and whether the trace was retained.
-- `Overall Result`: status, the primary finding in plain language, and whether the issue is CPU, hangs, memory, network, energy, exportability, or a trace-capture problem.
-- `Hangs`: table of hang start time, type, and duration; total stalled main-thread time; longest hang; and a warning that no exported hang rows only scopes to the captured window.
-- `CPU / Time Profiler`: parse/support status, whether bottlenecks crossed threshold, captured duration, thread count, slow function count, average/max function time, hang data availability, and broad hot-path families.
-- `Top User-Code Frames`: full-run app-attributed frames with samples/time. If empty, explain whether Time Profiler was unavailable, no app frames matched, or better `userBinaryHints`/dSYM are needed.
-- `Scoped Severe Hang` or `Scoped Hang`: scoped window, contained hangs, scoped thread/slow-function stats, top scoped frames, and a short interpretation of what those frames suggest.
-- Requested domains such as `Leaks`, `Allocations`, `Memory`, `Network`, or `Energy / Power`: include metrics, top findings, and confidence caveats.
-- `Support Matrix`: every analysis family with a clear human-facing status such as `supported`, `partial`, `not_exportable`, or `not present in trace` plus the reason. Explicitly distinguish "not present/exportable in this trace" from "no issue found."
-- `Export Diagnostics`: failed, empty, or skipped exports that affect confidence, especially TOC failures, Time Profiler parse failures, GUI-only tracks, empty Hangs schemas, HAR failures, Leaks, Allocations, Memory, Network, and Energy.
-- `Source Areas To Inspect`: file:line pointers found from relevant app frames, plus symbols/modules when file lookup is unavailable.
-- `Next Step`: the most useful next investigation step in Instruments.app or source, cleanup state for retained traces, and a proactive reminder that the user can ask to clear retained traces before ending the session.
+Before composing the final user-facing report for `profile_running_app`, `track_running_app`, or `analyze_trace`, read [references/report.md](references/report.md) and follow its report contract and examples. Only skip it for setup checks, cleanup, template/device listing, trace comparison summaries, or when the user explicitly asks for a brief answer.

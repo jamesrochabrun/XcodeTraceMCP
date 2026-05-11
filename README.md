@@ -13,13 +13,13 @@ This project is an **Instruments companion**, not a full replacement for Instrum
 ### Claude Code
 
 ```bash
-claude mcp add --transport stdio --scope user xctrace-analyzer -- npx -y @xctrace-analyzer/mcp-server
+claude mcp add --transport stdio --scope user xctrace-analyzer -- npx -y @xctrace-analyzer/mcp-server@latest
 ```
 
 Verify the local `xcrun xctrace` setup:
 
 ```bash
-npx -y @xctrace-analyzer/mcp-server --check
+npx -y @xctrace-analyzer/mcp-server@latest --check
 ```
 
 ### Claude Desktop
@@ -31,7 +31,7 @@ Add this to `~/Library/Application Support/Claude/claude_desktop_config.json`, t
   "mcpServers": {
     "xctrace-analyzer": {
       "command": "npx",
-      "args": ["-y", "@xctrace-analyzer/mcp-server"]
+      "args": ["-y", "@xctrace-analyzer/mcp-server@latest"]
     }
   }
 }
@@ -40,7 +40,7 @@ Add this to `~/Library/Application Support/Claude/claude_desktop_config.json`, t
 ### Codex CLI
 
 ```bash
-codex mcp add xctrace-analyzer -- npx -y @xctrace-analyzer/mcp-server
+codex mcp add xctrace-analyzer -- npx -y @xctrace-analyzer/mcp-server@latest
 ```
 
 Check that Codex registered the server:
@@ -58,7 +58,7 @@ Claude Desktop-style MCP configs can pass security settings through `env`:
   "mcpServers": {
     "xctrace-analyzer": {
       "command": "npx",
-      "args": ["-y", "@xctrace-analyzer/mcp-server"],
+      "args": ["-y", "@xctrace-analyzer/mcp-server@latest"],
       "env": {
         "XCTRACE_ANALYZER_TRACE_ROOT": "/Users/you/Library/Application Support/xctrace-analyzer/traces",
         "XCTRACE_ANALYZER_ALLOW_LAUNCH": "1"
@@ -74,7 +74,7 @@ Codex can pass the same settings with `--env`:
 codex mcp add xctrace-analyzer \
   --env XCTRACE_ANALYZER_TRACE_ROOT="/Users/you/Library/Application Support/xctrace-analyzer/traces" \
   --env XCTRACE_ANALYZER_ALLOW_LAUNCH=1 \
-  -- npx -y @xctrace-analyzer/mcp-server
+  -- npx -y @xctrace-analyzer/mcp-server@latest
 ```
 
 ### Build From Source
@@ -230,7 +230,7 @@ The MCP server keeps normal attach profiling and existing trace analysis availab
 For startup profiling without enabling launch mode, start the app manually and attach by exact PID as soon as it appears. For trusted local startup profiling, start the MCP server with launch enabled:
 
 ```bash
-XCTRACE_ANALYZER_ALLOW_LAUNCH=1 npx -y @xctrace-analyzer/mcp-server
+XCTRACE_ANALYZER_ALLOW_LAUNCH=1 npx -y @xctrace-analyzer/mcp-server@latest
 ```
 
 ---

@@ -23,13 +23,13 @@ It is an **honest Instruments companion**, not a complete GUI replacement. Recor
 ### Claude Code
 
 ```bash
-claude mcp add --transport stdio --scope user xctrace-analyzer -- npx -y @xctrace-analyzer/mcp-server
+claude mcp add --transport stdio --scope user xctrace-analyzer -- npx -y @xctrace-analyzer/mcp-server@latest
 ```
 
 Verify the local machine has a usable `xcrun xctrace`:
 
 ```bash
-npx -y @xctrace-analyzer/mcp-server --check
+npx -y @xctrace-analyzer/mcp-server@latest --check
 ```
 
 ### Claude Desktop
@@ -41,7 +41,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
   "mcpServers": {
     "xctrace-analyzer": {
       "command": "npx",
-      "args": ["-y", "@xctrace-analyzer/mcp-server"]
+      "args": ["-y", "@xctrace-analyzer/mcp-server@latest"]
     }
   }
 }
@@ -50,7 +50,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 ### Codex CLI
 
 ```bash
-codex mcp add xctrace-analyzer -- npx -y @xctrace-analyzer/mcp-server
+codex mcp add xctrace-analyzer -- npx -y @xctrace-analyzer/mcp-server@latest
 ```
 
 Check that Codex registered the server:
@@ -115,7 +115,7 @@ Attach profiling and trace analysis work by default. The secure defaults do not 
 For startup profiling with the default security posture, manually launch the app and attach by exact PID as soon as it appears. For trusted local launch profiling, start the server with:
 
 ```bash
-XCTRACE_ANALYZER_ALLOW_LAUNCH=1 npx -y @xctrace-analyzer/mcp-server
+XCTRACE_ANALYZER_ALLOW_LAUNCH=1 npx -y @xctrace-analyzer/mcp-server@latest
 ```
 
 Claude Desktop-style MCP configs can pass the same settings through `env`:
@@ -125,7 +125,7 @@ Claude Desktop-style MCP configs can pass the same settings through `env`:
   "mcpServers": {
     "xctrace-analyzer": {
       "command": "npx",
-      "args": ["-y", "@xctrace-analyzer/mcp-server"],
+      "args": ["-y", "@xctrace-analyzer/mcp-server@latest"],
       "env": {
         "XCTRACE_ANALYZER_ALLOW_LAUNCH": "1",
         "XCTRACE_ANALYZER_TRACE_ROOT": "/Users/you/Library/Application Support/xctrace-analyzer/traces"
@@ -141,7 +141,7 @@ Codex can pass the same settings with `--env`:
 codex mcp add xctrace-analyzer \
   --env XCTRACE_ANALYZER_ALLOW_LAUNCH=1 \
   --env XCTRACE_ANALYZER_TRACE_ROOT="/Users/you/Library/Application Support/xctrace-analyzer/traces" \
-  -- npx -y @xctrace-analyzer/mcp-server
+  -- npx -y @xctrace-analyzer/mcp-server@latest
 ```
 
 ### `profile_running_app`

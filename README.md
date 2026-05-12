@@ -1,5 +1,7 @@
 # Xcode Instruments Trace Analyzer (MCP)
 
+https://github.com/user-attachments/assets/e92cbd43-cd6c-4ec9-9392-d0d2408a648d
+
 > Intelligent performance analysis for Xcode Instruments traces, powered by AI via Model Context Protocol.
 
 Ask Claude to record and analyze Xcode Instruments traces, detect Time Profiler regressions, and get actionable optimization recommendations through a local MCP server.

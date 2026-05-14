@@ -44,7 +44,11 @@ interface XcrunRawResult {
  * trace file was fully written. Inspecting the trace path on disk is a more
  * reliable success signal than the exit code.
  */
-function runXcrunRaw(args: string[], timeout?: number): Promise<XcrunRawResult> {
+function runXcrunRaw(
+  args: string[],
+  timeout?: number,
+  signal?: AbortSignal
+): Promise<XcrunRawResult> {
   return new Promise((resolve) => {
     execFile(
       'xcrun',
@@ -53,6 +57,7 @@ function runXcrunRaw(args: string[], timeout?: number): Promise<XcrunRawResult> 
         maxBuffer: DEFAULT_MAX_BUFFER,
         timeout: timeout ?? DEFAULT_COMMAND_TIMEOUT_MS,
         killSignal: 'SIGKILL',
+        signal,
       },
       (error, stdout, stderr) => {
         const exitCode = (error as NodeJS.ErrnoException & { code?: number | string } | null)?.code;
@@ -378,6 +383,7 @@ export interface RecordOptions {
   duration?: number; // seconds
   outputPath: string;
   noPrompt?: boolean;
+  signal?: AbortSignal;
 }
 
 export function buildRecordTraceArgs(options: RecordOptions): string[] {
@@ -454,7 +460,7 @@ export async function recordTrace(options: RecordOptions): Promise<void> {
   // fully written. Determine success from the artifact on disk instead of from
   // the exit code so legitimate time-limited recordings aren't reported as
   // failures.
-  const result = await runXcrunRaw(args, timeout);
+  const result = await runXcrunRaw(args, timeout, options.signal);
   const traceWritten = await traceArtifactExists(options.outputPath);
 
   if (traceWritten) {

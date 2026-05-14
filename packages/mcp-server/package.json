@@ -1,6 +1,6 @@
 {
   "name": "@xctrace-analyzer/mcp-server",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "MCP server for Xcode Instruments trace analysis",
   "mcpName": "io.github.jamesrochabrun/xctrace-analyzer",
   "type": "module",

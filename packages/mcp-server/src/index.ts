@@ -17,8 +17,13 @@ import { fileURLToPath } from 'url';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
+import type {
+  ServerNotification,
+  ServerRequest,
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
+import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { JsonSchemaValidator, jsonSchemaValidator } from '@modelcontextprotocol/sdk/validation';
 
 import {
@@ -142,6 +147,13 @@ interface TraceCleanupResult {
   entries: TraceCleanupEntry[];
 }
 
+type XCTraceRequestExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
+
+interface ToolProgressReporter {
+  signal?: AbortSignal;
+  report(progress: number, total: number, message: string): Promise<void>;
+}
+
 export type RedactionMode = 'balanced' | 'strict' | 'off';
 
 export interface XCTraceAnalyzerSecurityOptions {
@@ -173,6 +185,11 @@ const MAX_STRING_LENGTH = 4096;
 const MAX_LAUNCH_ARGUMENTS = 128;
 const MAX_USER_BINARY_HINTS = 64;
 const MAX_ENVIRONMENT_VARIABLES = 64;
+const PROGRESS_TOTAL = 100;
+const PROGRESS_HEARTBEAT_MS = 10_000;
+const NOOP_PROGRESS: ToolProgressReporter = {
+  report: async () => {},
+};
 
 /**
  * MCP Server for Xcode Instruments trace analysis
@@ -205,6 +222,9 @@ export class XCTraceAnalyzerServer {
     );
 
     this.setupHandlers();
+    this.server.onerror = (error) => {
+      this.logRuntimeError(error, 'MCP protocol error');
+    };
   }
 
   private setupHandlers() {
@@ -214,8 +234,12 @@ export class XCTraceAnalyzerServer {
     }));
 
     // Handle tool calls
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      return await this.callTool(request.params.name, request.params.arguments);
+    this.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+      return await this.callTool(
+        request.params.name,
+        request.params.arguments,
+        this.progressReporter(extra)
+      );
     });
   }
 
@@ -558,38 +582,45 @@ export class XCTraceAnalyzerServer {
   /**
    * Handle tool calls
    */
-  async callTool(toolName: string, args: any): Promise<any> {
+  async callTool(
+    toolName: string,
+    args: any,
+    progress: ToolProgressReporter = NOOP_PROGRESS
+  ): Promise<any> {
     try {
+      this.assertNotCancelled(progress);
+      await progress.report(0, PROGRESS_TOTAL, `Starting ${toolName}`);
       switch (toolName) {
         case 'analyze_trace':
-          return await this.analyzeTrace(args);
+          return await this.analyzeTrace(args, progress);
 
         case 'compare_traces':
-          return await this.compareTraces(args);
+          return await this.compareTraces(args, progress);
 
         case 'track_running_app':
-          return await this.trackRunningApp(args);
+          return await this.trackRunningApp(args, progress);
 
         case 'profile_running_app':
-          return await this.profileRunningApp(args);
+          return await this.profileRunningApp(args, progress);
 
         case 'list_templates':
-          return await this.listTemplates();
+          return await this.listTemplates(progress);
 
         case 'list_devices':
-          return await this.listDevices();
+          return await this.listDevices(progress);
 
         case 'check_xctrace':
-          return await this.checkXCTrace();
+          return await this.checkXCTrace(progress);
 
         case 'cleanup_traces':
-          return await this.cleanupTraces(args);
+          return await this.cleanupTraces(args, progress);
 
         default:
           throw new Error(`Unknown tool: ${toolName}`);
       }
     } catch (error) {
-      const err = error as Error;
+      const err = error instanceof Error ? error : new Error(String(error));
+      await progress.report(100, PROGRESS_TOTAL, `Failed ${toolName}: ${err.message}`);
       return {
         content: [
           {
@@ -619,7 +650,7 @@ export class XCTraceAnalyzerServer {
   /**
    * Analyze a trace file
    */
-  private async analyzeTrace(args: any) {
+  private async analyzeTrace(args: any, progress: ToolProgressReporter) {
     const tracePath = this.requiredString(args?.tracePath, 'tracePath');
     const outputFormat = this.outputFormat(args);
     const timeRangeMs = this.optionalTimeRangeMs(args?.timeRangeMs);
@@ -630,9 +661,11 @@ export class XCTraceAnalyzerServer {
     );
     const slowThreshold = this.optionalNonNegativeNumber(args?.slowThreshold, 'slowThreshold');
     const topN = this.optionalPositiveInteger(args?.topN, 'topN', MAX_TOP_N);
+    await progress.report(5, PROGRESS_TOTAL, 'Preparing trace analysis');
     const preparedTracePath = await this.prepareTraceForAnalysis(
       tracePath,
-      this.optionalString(args?.dsymPath, 'dsymPath')
+      this.optionalString(args?.dsymPath, 'dsymPath'),
+      progress
     );
 
     const options: AnalysisOptions = {
@@ -643,7 +676,16 @@ export class XCTraceAnalyzerServer {
       ...(userBinaryHints ? { userBinaryHints } : {}),
     };
 
-    const analysis = await this.deps.analyzeTraceFile(preparedTracePath, options);
+    const analysis = await this.withProgressHeartbeat(
+      progress,
+      {
+        start: 20,
+        end: 85,
+        estimatedMs: 60_000,
+        message: 'Exporting and analyzing trace data',
+      },
+      () => this.deps.analyzeTraceFile(preparedTracePath, options)
+    );
     if (preparedTracePath !== tracePath) {
       analysis.exportAttempts = [
         {
@@ -656,8 +698,10 @@ export class XCTraceAnalyzerServer {
     }
 
     // Format output for Claude
+    await progress.report(95, PROGRESS_TOTAL, 'Formatting trace analysis report');
     const output = this.formatAnalysisOutput(this.safeDisplayValue(analysis) as Analysis);
     const text = this.formatToolOutput(output, this.structuredAnalysis(analysis), outputFormat);
+    await progress.report(100, PROGRESS_TOTAL, 'Finished analyze_trace');
 
     return {
       content: [
@@ -672,16 +716,19 @@ export class XCTraceAnalyzerServer {
   /**
    * Compare two trace files
    */
-  private async compareTraces(args: any) {
+  private async compareTraces(args: any, progress: ToolProgressReporter) {
     const { baselinePath, currentPath } = args;
     const outputFormat = this.outputFormat(args);
+    await progress.report(5, PROGRESS_TOTAL, 'Preparing trace comparison');
     const preparedBaselinePath = await this.prepareTraceForAnalysis(
       this.requiredString(baselinePath, 'baselinePath'),
-      this.optionalString(args?.baselineDsymPath, 'baselineDsymPath')
+      this.optionalString(args?.baselineDsymPath, 'baselineDsymPath'),
+      progress
     );
     const preparedCurrentPath = await this.prepareTraceForAnalysis(
       this.requiredString(currentPath, 'currentPath'),
-      this.optionalString(args?.currentDsymPath, 'currentDsymPath')
+      this.optionalString(args?.currentDsymPath, 'currentDsymPath'),
+      progress
     );
 
     const comparisonOptions: ComparisonOptions = {
@@ -689,16 +736,27 @@ export class XCTraceAnalyzerServer {
       failOnRegression: this.optionalBoolean(args?.failOnRegression, 'failOnRegression'),
     };
 
-    const comparison = await this.deps.compareTraceFiles(
-      preparedBaselinePath,
-      preparedCurrentPath,
-      undefined,
-      comparisonOptions
+    const comparison = await this.withProgressHeartbeat(
+      progress,
+      {
+        start: 20,
+        end: 85,
+        estimatedMs: 90_000,
+        message: 'Analyzing and comparing traces',
+      },
+      () => this.deps.compareTraceFiles(
+        preparedBaselinePath,
+        preparedCurrentPath,
+        undefined,
+        comparisonOptions
+      )
     );
 
     // Format output
+    await progress.report(95, PROGRESS_TOTAL, 'Formatting comparison report');
     const output = this.formatComparisonOutput(this.safeDisplayValue(comparison) as Comparison);
     const text = this.formatToolOutput(output, comparison, outputFormat);
+    await progress.report(100, PROGRESS_TOTAL, 'Finished compare_traces');
 
     return {
       content: [
@@ -714,7 +772,7 @@ export class XCTraceAnalyzerServer {
   /**
    * Record a running app and optionally analyze the captured trace.
    */
-  private async trackRunningApp(args: any) {
+  private async trackRunningApp(args: any, progress: ToolProgressReporter) {
     const target = this.recordTargetOptions(args);
     const template = this.optionalString(args?.template, 'template') ?? 'Leaks';
     const duration = this.optionalPositiveNumber(args?.durationSeconds, 'durationSeconds') ?? 60;
@@ -733,10 +791,25 @@ export class XCTraceAnalyzerServer {
       ...(args?.device !== undefined && args?.device !== null
         ? { device: this.requiredString(args.device, 'device') }
         : {}),
+      ...(progress.signal ? { signal: progress.signal } : {}),
     };
 
-    await this.deps.recordTrace(recordOptions);
+    await this.withProgressHeartbeat(
+      progress,
+      {
+        start: 10,
+        end: 70,
+        estimatedMs: duration * 1000,
+        message: `Recording ${template} trace for ${duration}s`,
+      },
+      () => this.deps.recordTrace(recordOptions)
+    );
     this.rememberRecordedTrace(outputPath);
+    await progress.report(
+      72,
+      PROGRESS_TOTAL,
+      openInInstruments ? 'Opening saved trace in Instruments.app' : 'Recording complete'
+    );
     const instrumentsOpen = await this.openTraceInInstruments(outputPath, openInInstruments);
 
     const lines = this.formatTrackingHeader({
@@ -751,6 +824,7 @@ export class XCTraceAnalyzerServer {
 
     if (args?.analyze === false) {
       lines.push('Analysis skipped.');
+      await progress.report(100, PROGRESS_TOTAL, 'Finished track_running_app');
       return {
         content: [
           {
@@ -787,9 +861,19 @@ export class XCTraceAnalyzerServer {
       ...(userBinaryHints ? { userBinaryHints } : {}),
     };
 
-    const analysis = await this.deps.analyzeTraceFile(outputPath, options);
+    const analysis = await this.withProgressHeartbeat(
+      progress,
+      {
+        start: 75,
+        end: 95,
+        estimatedMs: 60_000,
+        message: 'Analyzing recorded trace',
+      },
+      () => this.deps.analyzeTraceFile(outputPath, options)
+    );
     lines.push(this.formatAnalysisOutput(this.safeDisplayValue(analysis) as Analysis));
     const markdown = lines.join('\n');
+    await progress.report(100, PROGRESS_TOTAL, 'Finished track_running_app');
 
     return {
       content: [
@@ -818,7 +902,7 @@ export class XCTraceAnalyzerServer {
   /**
    * Record a running app with a preset of Instruments templates and return one report.
    */
-  private async profileRunningApp(args: any) {
+  private async profileRunningApp(args: any, progress: ToolProgressReporter) {
     const target = this.recordTargetOptions(args);
     const preset = this.optionalString(args?.preset, 'preset') ?? 'full';
     const profilePreset = this.profilePresetForName(preset);
@@ -836,6 +920,7 @@ export class XCTraceAnalyzerServer {
     const openInInstruments = this.optionalBoolean(args?.openInInstruments, 'openInInstruments') ?? true;
     const startedAt = new Date().toISOString().replace(/[:.]/g, '-');
     const results: ProfileTraceResult[] = [];
+    await progress.report(5, PROGRESS_TOTAL, 'Checking local xctrace capabilities');
     const capabilityWarnings = await this.profileCapabilityWarnings(profilePreset);
     const userBinaryHints = this.optionalStringArray(
       args?.userBinaryHints,
@@ -853,24 +938,48 @@ export class XCTraceAnalyzerServer {
     );
 
     try {
-      await this.deps.recordTrace({
-        template: profilePreset.template,
-        instruments: profilePreset.instruments,
-        ...target.recordOptions,
-        duration,
-        outputPath,
-        ...(device ? { device } : {}),
-      });
+      await this.withProgressHeartbeat(
+        progress,
+        {
+          start: 10,
+          end: 70,
+          estimatedMs: duration * 1000,
+          message: `Recording ${profilePreset.template} trace for ${duration}s`,
+        },
+        () => this.deps.recordTrace({
+          template: profilePreset.template,
+          instruments: profilePreset.instruments,
+          ...target.recordOptions,
+          duration,
+          outputPath,
+          ...(device ? { device } : {}),
+          ...(progress.signal ? { signal: progress.signal } : {}),
+        })
+      );
       this.rememberRecordedTrace(outputPath);
+      await progress.report(
+        72,
+        PROGRESS_TOTAL,
+        openInInstruments ? 'Opening saved trace in Instruments.app' : 'Recording complete'
+      );
       const instrumentsOpen = await this.openTraceInInstruments(outputPath, openInInstruments);
 
       const analysis = analyze
-        ? await this.deps.analyzeTraceFile(outputPath, {
-          slowThreshold: this.optionalNonNegativeNumber(args?.slowThreshold, 'slowThreshold'),
-          topN: this.optionalPositiveInteger(args?.topN, 'topN', MAX_TOP_N),
-          includeRecommendations: true,
-          ...(userBinaryHints ? { userBinaryHints } : {}),
-        })
+        ? await this.withProgressHeartbeat(
+          progress,
+          {
+            start: 75,
+            end: 95,
+            estimatedMs: 60_000,
+            message: 'Analyzing recorded trace',
+          },
+          () => this.deps.analyzeTraceFile(outputPath, {
+            slowThreshold: this.optionalNonNegativeNumber(args?.slowThreshold, 'slowThreshold'),
+            topN: this.optionalPositiveInteger(args?.topN, 'topN', MAX_TOP_N),
+            includeRecommendations: true,
+            ...(userBinaryHints ? { userBinaryHints } : {}),
+          })
+        )
         : undefined;
 
       results.push({ template: profilePreset.template, tracePath: outputPath, instrumentsOpen, analysis });
@@ -878,7 +987,7 @@ export class XCTraceAnalyzerServer {
       results.push({
         template: profilePreset.template,
         tracePath: outputPath,
-        error: (error as Error).message,
+        error: error instanceof Error ? error.message : String(error),
       });
     }
 
@@ -917,6 +1026,7 @@ export class XCTraceAnalyzerServer {
       },
       outputFormat
     );
+    await progress.report(100, PROGRESS_TOTAL, 'Finished profile_running_app');
 
     return {
       content: [
@@ -932,9 +1042,10 @@ export class XCTraceAnalyzerServer {
   /**
    * List available templates
    */
-  private async listTemplates() {
+  private async listTemplates(progress: ToolProgressReporter) {
     const templates = await this.deps.listTemplates();
     const safeTemplates = templates.map((template) => this.safeInlineText(template));
+    await progress.report(100, PROGRESS_TOTAL, 'Finished list_templates');
 
     return {
       content: [
@@ -949,9 +1060,10 @@ export class XCTraceAnalyzerServer {
   /**
    * List available devices
    */
-  private async listDevices() {
+  private async listDevices(progress: ToolProgressReporter) {
     const devices = await this.deps.listDevices();
     const safeDevices = devices.map((device) => this.safeInlineText(device));
+    await progress.report(100, PROGRESS_TOTAL, 'Finished list_devices');
 
     return {
       content: [
@@ -966,12 +1078,14 @@ export class XCTraceAnalyzerServer {
   /**
    * Check xctrace availability
    */
-  private async checkXCTrace() {
+  private async checkXCTrace(progress: ToolProgressReporter) {
+    await progress.report(10, PROGRESS_TOTAL, 'Checking xcrun xctrace availability');
     const capabilities = this.deps.getXCTraceCapabilities
       ? await this.deps.getXCTraceCapabilities()
       : await this.fallbackCapabilities();
 
     if (!capabilities.available) {
+      await progress.report(100, PROGRESS_TOTAL, 'Finished check_xctrace');
       return {
         content: [
           {
@@ -1013,6 +1127,7 @@ export class XCTraceAnalyzerServer {
       lines.push('Warnings:');
       lines.push(...warnings.map((warning) => `- ${warning}`));
     }
+    await progress.report(100, PROGRESS_TOTAL, 'Finished check_xctrace');
 
     return {
       content: [
@@ -1027,7 +1142,7 @@ export class XCTraceAnalyzerServer {
   /**
    * Preview or delete generated .trace bundles.
    */
-  private async cleanupTraces(args: any) {
+  private async cleanupTraces(args: any, progress: ToolProgressReporter) {
     const outputFormat = this.outputFormat(args);
     const dryRun = this.optionalBoolean(args?.dryRun, 'dryRun') ?? true;
     const tracePaths = this.optionalStringArray(args?.tracePaths, 'tracePaths') ?? [];
@@ -1047,6 +1162,7 @@ export class XCTraceAnalyzerServer {
     const scope = tracePaths.length > 0
       ? 'exact trace paths'
       : `${recursive ? 'recursive ' : ''}directory scan: ${resolve(directory ?? this.security.traceRoot)}`;
+    await progress.report(10, PROGRESS_TOTAL, 'Finding trace cleanup candidates');
     const candidatePaths = tracePaths.length > 0
       ? tracePaths.map((path) => resolve(path))
       : await this.discoverTraceBundles(resolve(directory ?? this.security.traceRoot), recursive);
@@ -1059,6 +1175,7 @@ export class XCTraceAnalyzerServer {
     const entries: TraceCleanupEntry[] = [];
     const seenPaths = new Set<string>();
 
+    await progress.report(30, PROGRESS_TOTAL, 'Inspecting trace cleanup candidates');
     for (const candidatePath of candidatePaths) {
       if (seenPaths.has(candidatePath)) {
         continue;
@@ -1087,6 +1204,7 @@ export class XCTraceAnalyzerServer {
 
     const output = this.formatTraceCleanupOutput(result);
     const text = this.formatToolOutput(output, result, outputFormat);
+    await progress.report(100, PROGRESS_TOTAL, 'Finished cleanup_traces');
 
     return {
       content: [
@@ -1255,6 +1373,89 @@ export class XCTraceAnalyzerServer {
     return redactText(String(value ?? ''), this.security.redaction, true);
   }
 
+  private progressReporter(extra?: XCTraceRequestExtra): ToolProgressReporter {
+    const progressToken = extra?._meta?.progressToken;
+    return {
+      signal: extra?.signal,
+      report: async (progress, total, message) => {
+        if (progressToken === undefined || !extra || extra.signal.aborted) {
+          return;
+        }
+
+        try {
+          await extra.sendNotification({
+            method: 'notifications/progress',
+            params: {
+              progressToken,
+              progress,
+              total,
+              message: this.safeInlineText(message),
+            },
+          } as ServerNotification);
+        } catch (error) {
+          this.logRuntimeError(error, `Failed to send progress for request ${String(extra.requestId)}`);
+        }
+      },
+    };
+  }
+
+  private async withProgressHeartbeat<T>(
+    progress: ToolProgressReporter,
+    options: {
+      start: number;
+      end: number;
+      estimatedMs: number;
+      message: string;
+    },
+    task: () => Promise<T>
+  ): Promise<T> {
+    this.assertNotCancelled(progress);
+    const startedAt = Date.now();
+    let reporting = false;
+
+    const send = () => {
+      if (reporting) {
+        return;
+      }
+      reporting = true;
+      const elapsed = Math.max(0, Date.now() - startedAt);
+      const estimatedMs = Math.max(1, options.estimatedMs);
+      const ratio = Math.min(0.95, elapsed / estimatedMs);
+      const currentProgress = options.start + (options.end - options.start) * ratio;
+      progress.report(currentProgress, PROGRESS_TOTAL, options.message)
+        .catch((error) => {
+          this.logRuntimeError(error, 'Progress heartbeat failed');
+        })
+        .finally(() => {
+          reporting = false;
+        });
+    };
+
+    await progress.report(options.start, PROGRESS_TOTAL, options.message);
+    const heartbeat = setInterval(send, PROGRESS_HEARTBEAT_MS);
+    heartbeat.unref?.();
+
+    try {
+      const result = await task();
+      this.assertNotCancelled(progress);
+      await progress.report(options.end, PROGRESS_TOTAL, options.message);
+      return result;
+    } finally {
+      clearInterval(heartbeat);
+    }
+  }
+
+  private assertNotCancelled(progress: ToolProgressReporter): void {
+    if (progress.signal?.aborted) {
+      throw new Error('Request cancelled by MCP client');
+    }
+  }
+
+  private logRuntimeError(error: unknown, context: string): void {
+    const message = error instanceof Error ? error.message : String(error);
+    safeWriteStderr(`[${SERVER_NAME}] ${context}: ${this.safeInlineText(message)}\n`);
+  }
+
   private redactStructuredValue(value: unknown, collapseStrings: boolean): unknown {
     const seen = new WeakMap<object, unknown>();
 
@@ -1297,7 +1498,11 @@ export class XCTraceAnalyzerServer {
     };
   }
 
-  private async prepareTraceForAnalysis(tracePath: string, dsymPath?: string): Promise<string> {
+  private async prepareTraceForAnalysis(
+    tracePath: string,
+    dsymPath?: string,
+    progress: ToolProgressReporter = NOOP_PROGRESS
+  ): Promise<string> {
     if (!dsymPath) {
       return tracePath;
     }
@@ -1305,11 +1510,20 @@ export class XCTraceAnalyzerServer {
     const tempDir = await mkdtemp(join(tmpdir(), 'xctrace-analyzer-'));
     const outputPath = join(tempDir, `${this.safeFileName(basename(tracePath, '.trace'))}-symbolicated.trace`);
     const symbolicateTrace = this.deps.symbolicateTrace ?? defaultSymbolicateTrace;
-    await symbolicateTrace({
-      inputPath: tracePath,
-      outputPath,
-      dsymPath,
-    });
+    await this.withProgressHeartbeat(
+      progress,
+      {
+        start: 8,
+        end: 18,
+        estimatedMs: 60_000,
+        message: 'Symbolicating trace',
+      },
+      () => symbolicateTrace({
+        inputPath: tracePath,
+        outputPath,
+        dsymPath,
+      })
+    );
     return outputPath;
   }
 
@@ -2498,10 +2712,11 @@ export class XCTraceAnalyzerServer {
    * Start the MCP server
    */
   async start() {
+    installStdioSafetyGuards();
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
 
-    console.error('Xcode Instruments Trace Analyzer MCP Server running on stdio');
+    safeWriteStderr('Xcode Instruments Trace Analyzer MCP Server running on stdio\n');
   }
 }
 
@@ -2699,6 +2914,54 @@ function envRedactionMode(): RedactionMode | undefined {
   return undefined;
 }
 
+let stdioSafetyGuardsInstalled = false;
+
+function installStdioSafetyGuards(): void {
+  if (stdioSafetyGuardsInstalled) {
+    return;
+  }
+  stdioSafetyGuardsInstalled = true;
+
+  process.stdout.on('error', handleProcessStreamError);
+  process.stderr.on('error', handleProcessStreamError);
+  process.on('unhandledRejection', (reason) => {
+    safeWriteStderr(`[${SERVER_NAME}] Unhandled async error: ${formatRuntimeError(reason)}\n`);
+  });
+  process.on('uncaughtException', (error) => {
+    if (isBenignStdioError(error)) {
+      return;
+    }
+    safeWriteStderr(`[${SERVER_NAME}] Uncaught runtime error: ${formatRuntimeError(error)}\n`);
+  });
+}
+
+function handleProcessStreamError(error: Error): void {
+  if (isBenignStdioError(error)) {
+    return;
+  }
+  safeWriteStderr(`[${SERVER_NAME}] stdio stream error: ${formatRuntimeError(error)}\n`);
+}
+
+function isBenignStdioError(error: unknown): boolean {
+  const code = typeof error === 'object' && error !== null && 'code' in error
+    ? (error as { code?: unknown }).code
+    : undefined;
+  return code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED' || code === 'ERR_STREAM_WRITE_AFTER_END';
+}
+
+function formatRuntimeError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return redactText(message, envRedactionMode() ?? 'balanced', true);
+}
+
+function safeWriteStderr(message: string): void {
+  try {
+    process.stderr.write(message);
+  } catch {
+    // If stderr itself is gone, there is nowhere safe to report the problem.
+  }
+}
+
 function isPathInside(pathValue: string, root: string): boolean {
   const relation = relative(root, pathValue);
   return relation === '' || (!!relation && !relation.startsWith('..') && !isAbsolute(relation));
@@ -2779,7 +3042,7 @@ if (isMainModule()) {
       process.exit(exitCode);
     }
   }).catch((error) => {
-    console.error('Failed to start server:', error);
+    safeWriteStderr(`Failed to start server: ${formatRuntimeError(error)}\n`);
     process.exit(1);
   });
 }

@@ -1,6 +1,6 @@
 {
   "name": "@xctrace-analyzer/core",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Core analysis library for Xcode Instruments traces",
   "type": "module",
   "main": "./dist/index.js",

@@ -115,7 +115,7 @@ describe('XCTraceAnalyzerServer', () => {
     const exitCode = await runCli(['--version'], output.io);
 
     expect(exitCode).toBe(0);
-    expect(output.stdout).toBe('xctrace-analyzer 0.1.6\n');
+    expect(output.stdout).toBe('xctrace-analyzer 0.1.7\n');
     expect(output.stderr).toBe('');
   });
 
@@ -162,7 +162,7 @@ describe('XCTraceAnalyzerServer', () => {
     });
 
     expect(exitCode).toBe(0);
-    expect(output.stdout).toContain('xctrace-analyzer: 0.1.6');
+    expect(output.stdout).toContain('xctrace-analyzer: 0.1.7');
     expect(output.stdout).toContain('xcrun xctrace: available');
     expect(output.stdout).toContain('templates: 1');
     expect(output.stdout).toContain('trace root: ');
@@ -1278,6 +1278,49 @@ describe('XCTraceAnalyzerServer', () => {
     expect(result.content[0].text).toContain('## Network');
     expect(result.content[0].text).toContain('Network failures detected');
     expect(result.content[0].text).toContain('## Prioritized Recommendations');
+  });
+
+  it('emits progress and passes cancellation signals to long profile recordings', async () => {
+    const controller = new AbortController();
+    const progressMessages: string[] = [];
+    let recordOptions: RecordOptions | undefined;
+
+    const server = new XCTraceAnalyzerServer({
+      analyzeTraceFile: async () => analysis(),
+      compareTraceFiles: async () => comparison(),
+      listTemplates: async () => [],
+      listDevices: async () => [],
+      isXCTraceAvailable: async () => true,
+      getXCTraceVersion: async () => 'xctrace version 16.0 (17E192)',
+      recordTrace: async (options) => {
+        recordOptions = options;
+      },
+    }, allowExternalOutput);
+
+    const result = await server.callTool(
+      'profile_running_app',
+      {
+        processName: 'MyApp',
+        preset: 'cpu',
+        durationSeconds: 1,
+        outputDirectory: '/tmp/profiles',
+        openInInstruments: false,
+        analyze: false,
+      },
+      {
+        signal: controller.signal,
+        report: async (_progress, _total, message) => {
+          progressMessages.push(message);
+        },
+      }
+    );
+
+    expect(result.isError).toBeUndefined();
+    expect(recordOptions?.signal).toBe(controller.signal);
+    expect(progressMessages).toContain('Starting profile_running_app');
+    expect(progressMessages).toContain('Checking local xctrace capabilities');
+    expect(progressMessages).toContain('Recording Time Profiler trace for 1s');
+    expect(progressMessages).toContain('Finished profile_running_app');
   });
 
   it('treats severe hangs as critical findings in combined profile reports', async () => {

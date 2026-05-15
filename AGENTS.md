@@ -1,22 +1,34 @@
 # Agent Guide
 
-This repository contains a local Model Context Protocol (MCP) server for Xcode Instruments profiling. Treat it as an honest `xcrun xctrace` companion, not a replacement for Instruments.app. The server records, opens saved traces in Instruments.app by default, symbolicates, exports, parses, and analyzes what Apple exposes through `xctrace`, then reports unsupported or non-exportable data explicitly.
+This repository contains a CLI-first local diagnostics toolkit plus a Model Context Protocol (MCP) adapter for Xcode Instruments profiling. Treat it as an honest `xcrun xctrace` companion, not a replacement for Instruments.app. The CLI and MCP server record, open saved traces in Instruments.app by default where appropriate, symbolicate, export, parse, and analyze what Apple exposes through `xctrace`, then report unsupported or non-exportable data explicitly.
 
 ## Project Architecture
 
-The repo is a pnpm workspace with two packages:
+The repo is a pnpm workspace with three packages:
 
 - `packages/core`: reusable TypeScript library for `xcrun xctrace` capability checks, recording/exporting, symbolication, trace parsing, analysis, recommendations, and Time Profiler comparisons.
-- `packages/mcp-server`: MCP stdio server that exposes the core library as assistant-callable tools.
+- `packages/cli`: user/CI/agent command-line interface for setup checks, template/device discovery, recording, single-template tracking, analysis, comparison, and cleanup.
+- `packages/mcp-server`: MCP stdio server that exposes the shared functionality as assistant-callable tools.
 
-High-level flow:
+High-level CLI flow:
+
+1. A user, CI job, or agent shell runs a command such as `xctrace-analyzer record --process 123 --preset full`.
+2. The CLI validates arguments and security defaults.
+3. The CLI delegates to `@xctrace-analyzer/core`.
+4. Core runs `xcrun xctrace` using `execFile` argument arrays.
+5. Core parses `xctrace export --toc`, TOC-driven XPath table XML, and HAR output when available.
+6. The CLI formats Markdown, JSON, or both and exits with a meaningful status code.
+
+High-level MCP flow:
 
 1. An MCP client calls a tool such as `profile_running_app`.
-2. The MCP server validates arguments and delegates to `@xctrace-analyzer/core`.
+2. The MCP server validates arguments and security defaults.
 3. Core runs `xcrun xctrace` using `execFile` argument arrays.
 4. Core parses `xctrace export --toc`, TOC-driven XPath table XML, and HAR output when available.
 5. Core returns typed analysis objects with support status and export attempts.
 6. The MCP server formats those objects into Markdown, JSON, or both.
+
+Design rule: new durable diagnostics should be CLI-callable first, with shared implementation in `packages/core` when practical. MCP tools and skills should be thin workflow/integration layers over that durable execution surface.
 
 ## User-Facing Skill
 
@@ -36,7 +48,24 @@ Analyze this trace.
 Compare these two traces.
 ```
 
-The skill should hide MCP JSON and tool names. It is the planning layer. It chooses between `profile_running_app`, `track_running_app`, `analyze_trace`, `compare_traces`, `check_xctrace`, `list_templates`, and `list_devices`, records or analyzes with `outputFormat: "both"` when diagnostics matter, reads Support Matrix / Export Diagnostics, and can rerun `analyze_trace` with `timeRangeMs` around the longest hang so `## Top User-Code Frames` answers the app-owned code question.
+The skill should hide MCP JSON, CLI plumbing, and tool names. It is the planning layer. In MCP-capable clients it chooses between `profile_running_app`, `track_running_app`, `analyze_trace`, `compare_traces`, `check_xctrace`, `list_templates`, and `list_devices`. In terminal/CI/agent-shell contexts it can use equivalent CLI commands such as `xctrace-analyzer record`, `track`, `analyze`, `compare`, `doctor`, `list-templates`, and `list-devices`. It records or analyzes with `outputFormat: "both"` / `--format both` when diagnostics matter, reads Support Matrix / Export Diagnostics, and can rerun `analyze_trace` or `xctrace-analyzer analyze --time-range` around the longest hang so Top User-Code Frames answer the app-owned code question.
+
+## CLI Commands
+
+Use the CLI for reliable terminal, CI, and shell-agent workflows:
+
+```bash
+xctrace-analyzer doctor
+xctrace-analyzer list-templates
+xctrace-analyzer list-devices
+xctrace-analyzer analyze ./App.trace --format both
+xctrace-analyzer compare baseline.trace current.trace --fail-on-regression
+xctrace-analyzer record --process 123 --duration 60 --preset full
+xctrace-analyzer track Leaks --process 123 --duration 60
+xctrace-analyzer cleanup --dir "$XCTRACE_ANALYZER_TRACE_ROOT" --recursive
+```
+
+Prefer the CLI when MCP server startup, stdio lifecycle, or client timeouts are the problem. Prefer MCP tools when an assistant needs typed tool schemas and progress notifications.
 
 ## MCP Tools
 
@@ -73,6 +102,8 @@ The secure defaults do not disable Time Profiler, Leaks, Allocations, HTTP Traff
 - `XCTRACE_ANALYZER_ALLOW_EXTERNAL_CLEANUP=1` allows destructive cleanup outside the trace root. Prefer exact `tracePaths`; for directory cleanup, run a dry run first or require `olderThanMinutes`.
 - `XCTRACE_ANALYZER_MAX_DURATION_SECONDS` defaults to `300`. If a longer repro is needed, explain that raising it increases trace size, capture time, and the amount of recorded data.
 - `XCTRACE_ANALYZER_REDACTION` defaults to `balanced`. Use `strict` for shared reports and `off` only for trusted local debugging where full paths, hosts, and tokens are acceptable in MCP output.
+
+The CLI uses the same environment variables and secure defaults. Launch profiling, all-process profiling, external output, and external cleanup remain explicitly opt-in.
 
 ### `profile_running_app`
 
@@ -133,9 +164,11 @@ Recommended UX:
 - `list_devices`: list physical devices and simulators visible to `xctrace`
 - `check_xctrace`: verify `xcrun xctrace` availability and report version, templates, devices, instruments, export modes, record modes, symbolication support, and warnings
 
+Each discovery tool has a CLI equivalent: `doctor`, `list-templates`, and `list-devices`.
+
 ## Operational Notes
 
-- Trace recording is one uninterrupted `xcrun xctrace` session. Mid-run approval prompts can drift the capture window or force a restart. Before invoking `profile_running_app` or `track_running_app`, advise the user to switch Claude Code to auto permission mode (Shift+Tab or `/permissions`), or enable Codex auto-review, so MCP tool calls are not gated on approvals during recording.
+- Trace recording is one uninterrupted `xcrun xctrace` session. Mid-run approval prompts can drift the capture window or force a restart. Before invoking `profile_running_app`, `track_running_app`, or a CLI recording command through an agent, advise the user to switch Claude Code to auto permission mode (Shift+Tab or `/permissions`), or enable Codex auto-review, so tool calls are not gated on approvals during recording.
 - macOS Power Profiler is not supported by Xcode; use `full` for macOS and `full-ios` or `energy` for iOS/iPadOS targets.
 - Do not run separate `xctrace record` sessions in parallel for full profiling. They can contend for kperf/ktrace locks. Use the combined recording path in `profile_running_app`.
 - `xctrace` can save malformed or partial traces even when recording exits nonzero. Surface the underlying `xctrace` stderr/stdout details in reports.
@@ -170,8 +203,9 @@ pnpm inspect:trace test-traces/example.trace
 ## Coding Guidelines
 
 - Keep MCP argument validation in `packages/mcp-server/src/index.ts`.
+- Keep CLI argument validation, command routing, and terminal output in `packages/cli/src/index.ts`.
 - Keep recording/export shell boundaries in `packages/core/src/utils/xctrace-runner.ts`.
 - Keep trace parsing and schema normalization in `packages/core/src/parser/trace-parser.ts`.
 - Keep recommendations in `packages/core/src/analyzer/recommendation-engine.ts`.
 - Preserve injectable dependencies in tests so MCP behavior can be tested without launching real `xctrace`.
-- Prefer focused tests around command construction, parser shapes, and MCP formatted output.
+- Prefer focused tests around command construction, parser shapes, CLI behavior, and MCP formatted output.

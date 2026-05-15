@@ -20,7 +20,7 @@
   ],
   "scripts": {
     "build": "pnpm -r build",
-    "typecheck": "pnpm --filter @xctrace-analyzer/core typecheck && pnpm --filter @xctrace-analyzer/core build && pnpm --filter @xctrace-analyzer/mcp-server typecheck",
+    "typecheck": "pnpm --filter @xctrace-analyzer/core typecheck && pnpm --filter @xctrace-analyzer/core build && pnpm --filter @xctrace-analyzer/cli typecheck && pnpm --filter @xctrace-analyzer/mcp-server typecheck",
     "test": "vitest run",
     "test:integration": "node scripts/integration-smoke.mjs",
     "test:mcp-smoke": "node scripts/mcp-tools-list-smoke.mjs",
@@ -28,6 +28,7 @@
     "check:pack": "node scripts/check-package-publish.mjs",
     "clean": "pnpm -r clean",
     "dev:core": "pnpm --filter @xctrace-analyzer/core dev",
+    "dev:cli": "pnpm --filter @xctrace-analyzer/cli dev",
     "dev:mcp": "pnpm --filter @xctrace-analyzer/mcp-server dev",
     "inspect:trace": "node scripts/inspect-trace-schemas.mjs",
     "lint": "eslint . --ext .ts,.tsx"

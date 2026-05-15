@@ -1,13 +1,13 @@
 ---
 name: xctrace-profiler
-description: Profile Xcode/macOS/iOS apps and Instruments traces with the xctrace-analyzer MCP server. Use for simple requests like "profile this app", "record my app on launch", "find why my app is slow", "check hangs", "find leaks", "inspect allocations", "analyze network", "profile startup", "analyze this .trace", "compare these traces", or "clean up profiling traces"; choose and run the right MCP execution tools without exposing MCP JSON to the user.
+description: Profile Xcode/macOS/iOS apps and Instruments traces with xctrace-analyzer MCP tools or CLI commands. Use for simple requests like "profile this app", "record my app on launch", "find why my app is slow", "check hangs", "find leaks", "inspect allocations", "analyze network", "profile startup", "analyze this .trace", "compare these traces", or "clean up profiling traces"; choose the right execution path without exposing MCP JSON, CLI plumbing, or tool names to the user.
 ---
 
 # Xcode Trace Profiler
 
 ## Goal
 
-Be the user-facing profiler for xctrace-analyzer. Users should ask in plain language; do not ask them to know MCP tool names or JSON. Choose the workflow, call the MCP execution tools, and report what xctrace could and could not export.
+Be the user-facing profiler for xctrace-analyzer. Users should ask in plain language; do not ask them to know MCP tool names, CLI flags, or JSON. Choose the workflow, call the available MCP execution tools or equivalent CLI commands, and report what xctrace could and could not export.
 
 ## Simple Prompts
 
@@ -41,6 +41,7 @@ Be the user-facing profiler for xctrace-analyzer. Users should ask in plain lang
    - Baseline/current or regression: call `compare_traces`.
    - Explicit single template such as Leaks, Allocations, Network, or Time Profiler: call `track_running_app`.
    - Broad, vague, hangs, CPU, leaks, memory, allocations, network, energy, startup, or "profile this app": call `profile_running_app`.
+   - In terminal/CI/agent-shell contexts where MCP is unavailable or unreliable, use the equivalent CLI commands: `xctrace-analyzer cleanup`, `analyze`, `compare`, `track`, `record`, `doctor`, `list-templates`, and `list-devices`.
 
 2. Establish the target.
    - Inspect the project for obvious Xcode targets, schemes, bundle names, app products, or trace paths before asking.
@@ -67,11 +68,13 @@ Be the user-facing profiler for xctrace-analyzer. Users should ask in plain lang
 
 4. Run with diagnostics.
    - Use `outputFormat: "both"` for profiling, trace analysis, and scoped follow-up analysis unless the user explicitly requests only Markdown or only JSON. The structured result preserves `supportStatus`, `exportAttempts`, hang timing, and user-code frame details needed for a complete report.
+   - For CLI execution, use `--format both` for the same diagnostic workflows unless the user explicitly requests only Markdown or JSON.
    - Recording tools open the saved `.trace` in Instruments.app by default with `openInInstruments: true`; pass `false` only for CI or headless automation.
+   - For CLI recording in CI or headless contexts, pass `--no-open`.
    - Use `durationSeconds: 60` by default; use 20-30 seconds only for explicit startup checks or longer when the repro needs it.
-   - For normal recordings, omit `outputDirectory` and let the MCP server write under its configured trace root.
+   - For normal recordings, omit `outputDirectory` / `--output-dir` and let the MCP server or CLI write under its configured trace root.
    - Use repo-local or temp output locations such as `test-traces/` only when `XCTRACE_ANALYZER_TRACE_ROOT` points there or `XCTRACE_ANALYZER_ALLOW_EXTERNAL_OUTPUT=1` is explicitly enabled. If an external output path is rejected, retry immediately without `outputDirectory`.
-   - Secure defaults block launch profiling, all-process recording, external trace output, and destructive cleanup outside the trace root unless the MCP server was explicitly configured to allow them.
+   - Secure defaults block launch profiling, all-process recording, external trace output, and destructive cleanup outside the trace root unless the MCP server or CLI environment was explicitly configured to allow them.
    - Keep recorded traces until the user has had a chance to inspect Instruments.app or asks for cleanup.
    - At the end of every report that retains a generated trace, proactively remind the user to ask for trace cleanup before ending the session if they are done inspecting it. Do not delete automatically.
    - Use `check_xctrace`, `list_templates`, or `list_devices` only for setup, device selection, or troubleshooting.
@@ -83,12 +86,13 @@ Be the user-facing profiler for xctrace-analyzer. Users should ask in plain lang
    - `not_exportable` may also mean the GUI track exists in Instruments.app but `xcrun export --toc` does not expose an exportable table schema.
    - `unsupported` is a structured status only; in human reports, phrase it as `not present in trace`. It means no matching schema was present in this trace TOC, usually because the recording template/platform did not include that analysis family or Xcode did not expose it for this run. It does not mean the analyzer code is missing.
    - If Time Profiler failed to parse, CPU attribution is unavailable for that run; inspect Export Diagnostics.
-   - If Leaks, Allocations, Memory, Network, or Energy are structurally `unsupported` / `not_exportable`, say the automated MCP report cannot validate that area and use the opened Instruments trace for GUI verification. Render `unsupported` as `not present in trace` for users.
+   - If Leaks, Allocations, Memory, Network, or Energy are structurally `unsupported` / `not_exportable`, say the automated report cannot validate that area and use the opened Instruments trace for GUI verification. Render `unsupported` as `not present in trace` for users.
    - Memory is distinct from Allocations and Leaks. A macOS `full` run can show `Memory: not present in trace` while Allocations/Leaks are present or `not_exportable`; that means the trace TOC did not expose generic memory/resident/dirty/VM schemas, not that allocation or leak recording was disabled.
    - Energy / Power depends on the Power Profiler instrument. It is mainly for iOS/iPadOS; macOS `full` does not include it, and macOS Power Profiler recordings may be rejected by Xcode or absent from the TOC. Report that as `not present in trace` due to platform/template/export availability, not an analyzer implementation gap.
 
 6. Follow up when needed.
    - For hangs, choose the longest Severe Hang, otherwise the longest Hang. Rerun `analyze_trace` on the saved trace with `timeRangeMs`: `startMs = max(0, hang.startMs - 500)`, `endMs = hang.startMs + hang.durationMs + 500`. Include the scoped report in the final answer; if rerunning is impossible, say why.
+   - For CLI execution, rerun `xctrace-analyzer analyze <trace> --time-range <startMs>:<endMs> --format both` for the same scoped hang follow-up.
    - Use `## Top User-Code Frames` from the scoped report to answer which app-owned code was running.
    - If Top User-Code Frames is empty but Time Profiler succeeded, rerun with better `userBinaryHints` or a dSYM.
    - Map important app frame names to source files with project search (`rg`) when source is available, then include concrete file:line pointers. If source is unavailable, list the most relevant symbols or modules instead.
@@ -100,4 +104,4 @@ Be the user-facing profiler for xctrace-analyzer. Users should ask in plain lang
 
 For profiling and trace-analysis reports, default to a full readable diagnostic report, not a short summary. Include everything meaningful the run found: exported hangs, support/export limitations, full-run user-code frames, scoped hang-window frames, requested domain findings, source areas, and recommendations.
 
-Before composing the final user-facing report for `profile_running_app`, `track_running_app`, or `analyze_trace`, read [references/report.md](references/report.md) and follow its report contract and examples. Only skip it for setup checks, cleanup, template/device listing, trace comparison summaries, or when the user explicitly asks for a brief answer.
+Before composing the final user-facing report for `profile_running_app`, `track_running_app`, `analyze_trace`, or the equivalent CLI `record`, `track`, and `analyze` commands, read [references/report.md](references/report.md) and follow its report contract and examples. Only skip it for setup checks, cleanup, template/device listing, trace comparison summaries, or when the user explicitly asks for a brief answer.

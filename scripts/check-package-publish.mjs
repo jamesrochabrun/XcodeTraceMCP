@@ -15,6 +15,12 @@ const packages = [
     requiredFiles: ['package/dist/index.js', 'package/dist/index.d.ts', 'package/README.md', 'package/LICENSE'],
   },
   {
+    dir: 'packages/cli',
+    name: '@xctrace-analyzer/cli',
+    binName: 'xctrace-analyzer',
+    requiredFiles: ['package/dist/index.js', 'package/dist/index.d.ts', 'package/README.md', 'package/LICENSE'],
+  },
+  {
     dir: 'packages/mcp-server',
     name: '@xctrace-analyzer/mcp-server',
     mcpName: 'io.github.jamesrochabrun/xctrace-analyzer',
@@ -75,6 +81,10 @@ function assertProductionMetadata(pkg, expected) {
   if (expected.mcpName) {
     assert(pkg.mcpName === expected.mcpName, `${pkg.name} must declare mcpName ${expected.mcpName}`);
     assert(pkg.bin?.['xctrace-analyzer-mcp'] === './dist/index.js', `${pkg.name} is missing the MCP binary`);
+  }
+
+  if (expected.binName) {
+    assert(pkg.bin?.[expected.binName] === './dist/index.js', `${pkg.name} is missing the ${expected.binName} binary`);
   }
 }
 
